@@ -1,0 +1,26 @@
+syntax = "proto3";
+
+package transfer;
+
+service FileTransferService {
+  rpc UploadFile(stream UploadRequest) returns (UploadReply);
+}
+
+message FileMetadata {
+  string filename = 1;
+  uint64 total_size = 2;
+  uint32 chunk_size = 3;
+}
+
+message UploadRequest {
+  oneof payload {
+    FileMetadata meta = 1;
+    bytes data = 2;
+  }
+}
+
+message UploadReply {
+  bool ok = 1;
+  string message = 2;
+  uint64 bytes_received = 3;
+}

@@ -1,116 +1,98 @@
-#include <zmq.hpp>
-
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <grpcpp/grpcpp.h>
 #include <iostream>
-#include <sstream>
 #include <string>
-#include <vector>
 
-static std::vector<std::string> split(const std::string &s, char delim) {
-    std::vector<std::string> out;
-    std::stringstream ss(s);
-    std::string item;
-    while (std::getline(ss, item, delim)) {
-        out.push_back(item);
-    }
-    return out;
-}
+#include "transfer.grpc.pb.h"
 
-int main(int argc, char **argv) {
-    // Usage: receiver [control_port] [data_port] [output_dir]
-    const std::string control_port = (argc > 1) ? argv[1] : "5555";
-    const std::string data_port = (argc > 2) ? argv[2] : "6000";
-    const std::string output_dir = (argc > 3) ? argv[3] : ".\\incoming";
+class FileTransferServiceImpl final : public transfer::FileTransferService::Service {
+  public:
+    explicit FileTransferServiceImpl(std::string output_dir)
+        : output_dir_(std::move(output_dir)) {}
 
-    std::filesystem::create_directories(output_dir);
+    grpc::Status UploadFile(grpc::ServerContext *context,
+                            grpc::ServerReader<transfer::UploadRequest> *reader,
+                            transfer::UploadReply *reply) override {
+        (void)context;
 
-    zmq::context_t ctx(1);
+        std::filesystem::create_directories(output_dir_);
 
-    zmq::socket_t rep(ctx, zmq::socket_type::rep);
-    rep.bind("tcp://0.0.0.0:" + control_port);
-
-    std::cout << "[receiver] Waiting metadata on port " << control_port << "...\n";
-    zmq::message_t meta_msg;
-    if (!rep.recv(meta_msg, zmq::recv_flags::none)) {
-        std::cerr << "[receiver] Failed to receive metadata.\n";
-        return 1;
-    }
-
-    std::string meta(static_cast<char *>(meta_msg.data()), meta_msg.size());
-    std::vector<std::string> parts = split(meta, '|');
-    if (parts.size() != 4 || parts[0] != "META") {
-        rep.send(zmq::buffer("ERR_BAD_META"), zmq::send_flags::none);
-        std::cerr << "[receiver] Invalid metadata format.\n";
-        return 1;
-    }
-
-    const std::string safe_name = std::filesystem::path(parts[1]).filename().string();
-    const std::uint64_t expected_size = std::stoull(parts[2]);
-    const std::uint64_t chunk_size = std::stoull(parts[3]);
-
-    std::filesystem::path out_path =
-        std::filesystem::path(output_dir) / ("received_" + safe_name);
-    std::ofstream out(out_path, std::ios::binary);
-    if (!out) {
-        rep.send(zmq::buffer("ERR_OPEN_FILE"), zmq::send_flags::none);
-        std::cerr << "[receiver] Failed to open output file: " << out_path << "\n";
-        return 1;
-    }
-
-    rep.send(zmq::buffer("OK"), zmq::send_flags::none);
-    std::cout << "[receiver] Receiving " << safe_name << " (" << expected_size
-              << " bytes), chunk size " << chunk_size << " bytes.\n";
-
-    zmq::socket_t pull(ctx, zmq::socket_type::pull);
-    pull.bind("tcp://0.0.0.0:" + data_port);
-
-    std::uint64_t written = 0;
-    while (written < expected_size) {
-        zmq::message_t type_msg;
-        zmq::message_t seq_msg;
-        zmq::message_t data_msg;
-
-        if (!pull.recv(type_msg, zmq::recv_flags::none)) {
-            std::cerr << "\n[receiver] Failed to receive frame type.\n";
-            return 1;
+        transfer::UploadRequest request;
+        if (!reader->Read(&request) || !request.has_meta()) {
+            reply->set_ok(false);
+            reply->set_message("First stream message must be metadata.");
+            reply->set_bytes_received(0);
+            return grpc::Status::OK;
         }
 
-        std::string type(static_cast<char *>(type_msg.data()), type_msg.size());
-        if (type == "DATA") {
-            if (!pull.recv(seq_msg, zmq::recv_flags::none) ||
-                !pull.recv(data_msg, zmq::recv_flags::none)) {
-                std::cerr << "\n[receiver] Failed to receive DATA frames.\n";
-                return 1;
-            }
+        const transfer::FileMetadata &meta = request.meta();
+        const std::string safe_name = std::filesystem::path(meta.filename()).filename().string();
+        const std::uint64_t expected_size = meta.total_size();
+        const std::filesystem::path out_path =
+            std::filesystem::path(output_dir_) / ("received_" + safe_name);
 
-            out.write(static_cast<char *>(data_msg.data()),
-                      static_cast<std::streamsize>(data_msg.size()));
-            written += static_cast<std::uint64_t>(data_msg.size());
+        std::ofstream out(out_path, std::ios::binary);
+        if (!out) {
+            reply->set_ok(false);
+            reply->set_message("Failed to open output file.");
+            reply->set_bytes_received(0);
+            return grpc::Status::OK;
+        }
+
+        std::uint64_t written = 0;
+        while (reader->Read(&request)) {
+            if (!request.has_data()) {
+                continue;
+            }
+            const std::string &chunk = request.data();
+            out.write(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+            written += static_cast<std::uint64_t>(chunk.size());
             std::cout << "\r[receiver] Progress: " << written << "/" << expected_size
                       << " bytes" << std::flush;
-        } else if (type == "DONE") {
-            if (!pull.recv(seq_msg, zmq::recv_flags::none)) {
-                std::cerr << "\n[receiver] Failed to receive DONE sequence.\n";
-                return 1;
-            }
-            break;
-        } else {
-            std::cerr << "\n[receiver] Unknown frame type: " << type << "\n";
-            return 1;
         }
+
+        out.close();
+        std::cout << "\n[receiver] Saved file to " << out_path << "\n";
+
+        if (written != expected_size) {
+            reply->set_ok(false);
+            reply->set_message("Size mismatch: wrote " + std::to_string(written) +
+                               " expected " + std::to_string(expected_size));
+            reply->set_bytes_received(written);
+            return grpc::Status::OK;
+        }
+
+        reply->set_ok(true);
+        reply->set_message("Transfer complete.");
+        reply->set_bytes_received(written);
+        return grpc::Status::OK;
     }
 
-    out.close();
-    std::cout << "\n[receiver] Saved file to " << out_path << "\n";
+  private:
+    std::string output_dir_;
+};
 
-    if (written != expected_size) {
-        std::cerr << "[receiver] Warning: size mismatch, wrote " << written
-                  << " but expected " << expected_size << "\n";
-        return 2;
+int main(int argc, char **argv) {
+    // Usage: receiver [port] [output_dir]
+    const std::string port = (argc > 1) ? argv[1] : "50051";
+    const std::string output_dir = (argc > 2) ? argv[2] : ".\\incoming";
+    const std::string server_addr = "0.0.0.0:" + port;
+
+    FileTransferServiceImpl service(output_dir);
+
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort(server_addr, grpc::InsecureServerCredentials());
+    builder.RegisterService(&service);
+    std::unique_ptr<grpc::Server> server(builder.BuildAndStart());
+
+    if (!server) {
+        std::cerr << "[receiver] Failed to start gRPC server on " << server_addr << "\n";
+        return 1;
     }
 
-    std::cout << "[receiver] Transfer complete.\n";
+    std::cout << "[receiver] gRPC server listening on " << server_addr << "\n";
+    server->Wait();
     return 0;
 }
