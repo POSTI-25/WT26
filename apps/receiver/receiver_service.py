@@ -49,6 +49,18 @@ def get_socket_ip(sock: socket.socket, peer: bool) -> str | None:
     return None
 
 
+def get_local_ip(preferred_host: str) -> str:
+    if preferred_host and preferred_host not in {"0.0.0.0", "::"}:
+        return preferred_host
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            return str(probe.getsockname()[0])
+    except OSError:
+        return "127.0.0.1"
+
+
 def enrich_report_with_socket_ips(report: dict, conn: socket.socket) -> dict:
     report_with_socket = dict(report)
     report_with_socket["socket_receiver_ip"] = get_socket_ip(conn, peer=False)
@@ -279,28 +291,28 @@ def print_gpu_report(report) -> None:
         )
 
 
-def build_gpu_store(report):
+def build_gpu_store(report, ip_address: str):
     gpu_cards = []
     for gpu in report.get("gpus", []):
         gpu_cards.append(
             {
-                "index": gpu.get("index"),
                 "gpu_card": gpu.get("name"),
                 "gpu_usage_percent": gpu.get("utilization_gpu_percent"),
+                "memory_available_mb": gpu.get("memory_free_mb"),
                 "cuda_cores": gpu.get("cuda_cores"),
             }
         )
 
     return {
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "ok": report.get("ok", False),
-        "source": report.get("source"),
+        "ip_address": ip_address,
+        "gpu_count": len(gpu_cards),
         "gpu_cards": gpu_cards,
     }
 
 
-def write_gpu_store(report, gpu_store_path: Path) -> None:
-    store = build_gpu_store(report)
+def write_gpu_store(report, gpu_store_path: Path, ip_address: str) -> None:
+    store = build_gpu_store(report, ip_address)
     gpu_store_path.parent.mkdir(parents=True, exist_ok=True)
     gpu_store_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
 
@@ -310,9 +322,9 @@ def write_gpu_status(report, gpu_status_path: Path) -> None:
     gpu_status_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
 
 
-def refresh_gpu_files(gpu_store_path: Path, gpu_status_path: Path | None):
+def refresh_gpu_files(gpu_store_path: Path, gpu_status_path: Path | None, local_ip: str):
     latest_gpu_report = get_gpu_report()
-    write_gpu_store(latest_gpu_report, gpu_store_path)
+    write_gpu_store(latest_gpu_report, gpu_store_path, local_ip)
     if gpu_status_path is not None:
         write_gpu_status(latest_gpu_report, gpu_status_path)
     return latest_gpu_report
@@ -323,13 +335,14 @@ def handle_client(
     output_dir: Path,
     gpu_store_path: Path,
     gpu_status_path: Path | None,
+    local_ip: str,
 ) -> None:
     with conn:
         reader = conn.makefile("rb")
         metadata_line = receive_line(reader)
         metadata = json.loads(metadata_line)
 
-        latest_gpu_report = refresh_gpu_files(gpu_store_path, gpu_status_path)
+        latest_gpu_report = refresh_gpu_files(gpu_store_path, gpu_status_path, local_ip)
         latest_gpu_report = enrich_report_with_socket_ips(latest_gpu_report, conn)
 
         if metadata.get("request") == "ping":
@@ -407,8 +420,9 @@ def main() -> None:
 
     gpu_report = get_gpu_report()
     print_gpu_report(gpu_report)
+    local_ip = get_local_ip(args.host)
     gpu_store_path = Path(args.gpu_store_file)
-    write_gpu_store(gpu_report, gpu_store_path)
+    write_gpu_store(gpu_report, gpu_store_path, local_ip)
     print(f"[receiver] Stored GPU summary at {gpu_store_path}")
 
     gpu_status_path = Path(args.gpu_status_file) if args.gpu_status_file else None
@@ -433,7 +447,7 @@ def main() -> None:
         while True:
             now = time.monotonic()
             if now >= next_refresh:
-                refresh_gpu_files(gpu_store_path, gpu_status_path)
+                refresh_gpu_files(gpu_store_path, gpu_status_path, local_ip)
                 next_refresh = now + refresh_interval
 
             try:
@@ -443,7 +457,7 @@ def main() -> None:
 
             print(f"[receiver] Connection from {addr[0]}:{addr[1]}")
             try:
-                handle_client(conn, output_dir, gpu_store_path, gpu_status_path)
+                handle_client(conn, output_dir, gpu_store_path, gpu_status_path, local_ip)
             except Exception as exc:
                 print(f"\n[receiver] Error: {exc}")
                 try:

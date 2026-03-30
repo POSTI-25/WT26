@@ -6,5 +6,6 @@
   "scan_timeout_seconds": 0.35,
   "scan_max_workers": 64,
   "max_scan_hosts": 512,
-  "scan_store_file": "../data/gpu/network_gpu_store.json"
+  "scan_store_file": "../data/gpu/network_gpu_store.json",
+  "ping_store_file": "../data/gpu/ping_gpu_snapshot.json"
 }
