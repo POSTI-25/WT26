@@ -1,5 +1,4 @@
 {
-  "target_host": "127.0.0.1",
   "target_port": 50051,
   "discovery_subnet": "192.168.1.0/24",
   "connect_timeout_seconds": 3.0,

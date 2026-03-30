@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 function formatBytes(bytes) {
   if (!bytes && bytes !== 0) return "-";
@@ -22,6 +22,45 @@ function parseErrorMessage(error, fallback) {
   return fallback;
 }
 
+function parseSubnetInput(rawValue) {
+  return String(rawValue || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function deriveSlash24Subnet(rawHost) {
+  const input = String(rawHost || "").trim();
+  if (!input) return "";
+
+  let normalized = input;
+  if (normalized.includes("://")) {
+    try {
+      normalized = new URL(normalized).hostname;
+    } catch {
+      return "";
+    }
+  }
+
+  const colonCount = (normalized.match(/:/g) || []).length;
+  if (colonCount === 1 && !normalized.startsWith("[")) {
+    const parts = normalized.split(":");
+    if (parts.length === 2 && /^\d+$/.test(parts[1])) {
+      normalized = parts[0];
+    }
+  }
+
+  const chunks = normalized.split(".");
+  if (chunks.length !== 4) return "";
+  if (chunks.some((value) => !/^\d+$/.test(value))) return "";
+
+  const octets = chunks.map((value) => Number(value));
+  if (octets.some((value) => value < 0 || value > 255)) return "";
+  if (octets[0] === 127) return "";
+
+  return `${octets[0]}.${octets[1]}.${octets[2]}.0/24`;
+}
+
 export default function App() {
   const [currentPage, setCurrentPage] = useState("receiver");
 
@@ -32,11 +71,16 @@ export default function App() {
 
   const [apiHealthy, setApiHealthy] = useState(null);
   const [gpuReport, setGpuReport] = useState(null);
+  const [receivers, setReceivers] = useState([]);
+  const [discoverySubnets, setDiscoverySubnets] = useState("192.168.1.0/24");
+  const [autoRefreshReceivers, setAutoRefreshReceivers] = useState(true);
+  const [lastScanAt, setLastScanAt] = useState("");
   const [history, setHistory] = useState([]);
   const [selectedFile, setSelectedFile] = useState(null);
   const [transferResult, setTransferResult] = useState(null);
 
   const [gpuLoading, setGpuLoading] = useState(false);
+  const [scanLoading, setScanLoading] = useState(false);
   const [sendLoading, setSendLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
   const [theme, setTheme] = useState("light");
@@ -47,6 +91,7 @@ export default function App() {
   ]);
 
   const fileInputRef = useRef(null);
+  const scanInFlightRef = useRef(false);
 
   const lastHistoryItem = history.length > 0 ? history[history.length - 1] : null;
 
@@ -71,6 +116,9 @@ export default function App() {
 
   const runningJobs = sendLoading ? 1 : Math.min(2, busyNodes);
   const queueRows = history.slice().reverse().slice(0, 8);
+
+  const discoveredCount = receivers.length;
+  const discoveredWithGpu = receivers.filter((item) => Number(item.gpu_count || 0) > 0).length;
 
   const utilizationBars = useMemo(() => {
     if (gpuList.length === 0) {
@@ -203,6 +251,58 @@ export default function App() {
     }
   }
 
+  const handleScanReceivers = useCallback(
+    async ({ quiet = false } = {}) => {
+      if (scanInFlightRef.current) {
+        return;
+      }
+
+      scanInFlightRef.current = true;
+      setScanLoading(true);
+
+      if (!quiet) {
+        setStatusMessage("Scanning network for active receivers...");
+        appendLog("info", "Network scan started.");
+      }
+
+      try {
+        const subnets = parseSubnetInput(discoverySubnets);
+        const response = await fetch("/api/receivers/scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            subnets,
+            port: Number(port),
+            timeout_seconds: Math.max(0.2, Math.min(5, Number(timeoutSeconds) || 0.35)),
+            max_workers: 64,
+            max_hosts: 512
+          })
+        });
+
+        const payload = await readJson(response);
+        const nextReceivers = Array.isArray(payload.receivers) ? payload.receivers : [];
+
+        // Replace the full list each scan so offline receivers are removed immediately.
+        setReceivers(nextReceivers);
+        setLastScanAt(nowTime());
+
+        if (!quiet) {
+          setStatusMessage(`Receiver scan complete. Found ${nextReceivers.length} active host(s).`);
+          appendLog("ok", `Network scan complete: ${nextReceivers.length} receiver(s) online.`);
+        }
+      } catch (error) {
+        if (!quiet) {
+          setStatusMessage(parseErrorMessage(error, "Receiver scan failed."));
+          appendLog("error", "Network scan failed.");
+        }
+      } finally {
+        scanInFlightRef.current = false;
+        setScanLoading(false);
+      }
+    },
+    [discoverySubnets, port, timeoutSeconds]
+  );
+
   async function handleSendFile() {
     if (!selectedFile) {
       setStatusMessage("Select a file first.");
@@ -265,6 +365,26 @@ export default function App() {
     checkApiHealth();
     fetchHistory();
   }, []);
+
+  useEffect(() => {
+    const derived = deriveSlash24Subnet(host);
+    if (derived && discoverySubnets === "192.168.1.0/24") {
+      setDiscoverySubnets(derived);
+    }
+  }, [host, discoverySubnets]);
+
+  useEffect(() => {
+    if (currentPage !== "receiver" || !autoRefreshReceivers) {
+      return undefined;
+    }
+
+    handleScanReceivers({ quiet: true });
+    const timerId = window.setInterval(() => {
+      handleScanReceivers({ quiet: true });
+    }, 15000);
+
+    return () => window.clearInterval(timerId);
+  }, [autoRefreshReceivers, currentPage, handleScanReceivers]);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
@@ -425,7 +545,7 @@ export default function App() {
             <section className="overview-grid">
               <article className="overview-card">
                 <p>Active Nodes</p>
-                <h3>{activeNodes}</h3>
+                <h3>{Math.max(activeNodes, discoveredCount)}</h3>
                 <div className="pill success">trending_up {apiHealthy ? "API Reachable" : "API Offline"}</div>
               </article>
               <article className="overview-card primary">
@@ -434,8 +554,8 @@ export default function App() {
                 <div className="pill">sync Processing...</div>
               </article>
               <article className="overview-card">
-                <p>Idle Nodes</p>
-                <h3>{idleNodes}</h3>
+                <p>Receivers With GPU</p>
+                <h3>{discoveredWithGpu}</h3>
                 <div className="pill neutral">sleep Standby</div>
               </article>
               <article className="overview-card">
@@ -448,6 +568,98 @@ export default function App() {
                   <div style={{ width: `${Math.max(0, Math.min(100, totalGpuUsage))}%` }} />
                 </div>
               </article>
+            </section>
+
+            <section className="receiver-discovery-panel">
+              <div className="section-head">
+                <h2>Receivers on Network</h2>
+                <span>{lastScanAt ? `Last scan ${lastScanAt}` : "Not scanned yet"}</span>
+              </div>
+
+              <div className="receiver-scan-controls">
+                <input
+                  value={discoverySubnets}
+                  onChange={(e) => setDiscoverySubnets(e.target.value)}
+                  placeholder="192.168.1.0/24,10.0.0.0/24"
+                />
+                <button
+                  className="solid"
+                  onClick={() => handleScanReceivers({ quiet: false })}
+                  disabled={scanLoading || gpuLoading || sendLoading}
+                >
+                  {scanLoading ? "Scanning..." : "Scan Now"}
+                </button>
+                <button
+                  className="ghost"
+                  onClick={() => {
+                    const derived = deriveSlash24Subnet(host);
+                    if (derived) {
+                      setDiscoverySubnets(derived);
+                    }
+                  }}
+                  disabled={scanLoading}
+                >
+                  Use Host /24
+                </button>
+                <label className="auto-toggle">
+                  <input
+                    type="checkbox"
+                    checked={autoRefreshReceivers}
+                    onChange={(e) => setAutoRefreshReceivers(e.target.checked)}
+                  />
+                  Auto refresh
+                </label>
+              </div>
+
+              <p className="receiver-hint">
+                Shows only currently reachable receivers. Offline nodes are removed on the next scan.
+              </p>
+
+              <div className="receiver-grid">
+                {receivers.length === 0 && (
+                  <article className="receiver-empty-card">
+                    <h4>No reachable receivers yet</h4>
+                    <p>Run a scan to discover active receiver nodes on your subnet.</p>
+                  </article>
+                )}
+
+                {receivers.map((receiver) => {
+                  const gpuRows = Array.isArray(receiver.gpus) ? receiver.gpus : [];
+                  return (
+                    <article key={`${receiver.ip_address}:${receiver.port}`} className="receiver-card">
+                      <div className="receiver-card-top">
+                        <div>
+                          <h4>{receiver.hostname || receiver.ip_address}</h4>
+                          <p>
+                            {receiver.ip_address}:{receiver.port}
+                          </p>
+                        </div>
+                        <span className={`tiny-pill ${receiver.ok ? "ok" : "bad"}`}>
+                          {receiver.ok ? "online" : "degraded"}
+                        </span>
+                      </div>
+
+                      <div className="receiver-meta">
+                        <span>GPUs: {Number(receiver.gpu_count || 0)}</span>
+                        <span>Source: {receiver.source || "unknown"}</span>
+                      </div>
+
+                      <div className="receiver-gpu-list">
+                        {gpuRows.length === 0 && <p>No GPU metrics reported.</p>}
+                        {gpuRows.map((gpu, index) => (
+                          <div key={`${receiver.ip_address}-gpu-${gpu.uuid || gpu.index || index}`}>
+                            <strong>{gpu.name || `GPU ${gpu.index ?? index}`}</strong>
+                            <small>
+                              Util {Number(gpu.utilization_gpu_percent || 0)}% | Mem {Number(gpu.memory_used_mb || 0)}/
+                              {Number(gpu.memory_total_mb || 0)} MB
+                            </small>
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
             </section>
 
             <section className="bento-grid">

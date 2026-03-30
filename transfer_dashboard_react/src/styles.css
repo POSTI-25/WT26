@@ -409,6 +409,173 @@ body {
   gap: 0.9rem;
 }
 
+.receiver-discovery-panel {
+  margin-top: 0.9rem;
+  border: 1px solid #ebe3f2;
+  border-radius: 0.95rem;
+  background: #fff;
+  padding: 0.75rem;
+}
+
+.receiver-scan-controls {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.receiver-scan-controls input {
+  width: 100%;
+  border: 1px solid #ded7e5;
+  border-radius: 0.72rem;
+  background: #fff;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.84rem;
+}
+
+.receiver-scan-controls input:focus {
+  outline: 0;
+  border-color: #af9ac7;
+  box-shadow: 0 0 0 3px rgba(111, 80, 146, 0.15);
+}
+
+.receiver-scan-controls button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.52rem 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.receiver-scan-controls button.solid {
+  background: linear-gradient(130deg, #6f5092, #7b41b3);
+  color: #fff;
+}
+
+.receiver-scan-controls button.ghost {
+  background: #eef0f4;
+  color: #4f5a66;
+}
+
+.receiver-scan-controls button:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.auto-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.73rem;
+  color: #616975;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.auto-toggle input {
+  width: 14px;
+  height: 14px;
+}
+
+.receiver-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.73rem;
+  color: #6f6a7b;
+}
+
+.receiver-grid {
+  margin-top: 0.65rem;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+
+.receiver-card,
+.receiver-empty-card {
+  border: 1px solid #eee6f3;
+  border-radius: 0.88rem;
+  padding: 0.65rem;
+  background: #fbfafc;
+}
+
+.receiver-empty-card h4 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.receiver-empty-card p {
+  margin: 0.35rem 0 0;
+  font-size: 0.76rem;
+  color: #6f7782;
+}
+
+.receiver-card-top {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.receiver-card-top h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.receiver-card-top p {
+  margin: 0.18rem 0 0;
+  color: #818895;
+  font-size: 0.71rem;
+}
+
+.receiver-meta {
+  margin-top: 0.5rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.receiver-meta span {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.16rem 0.44rem;
+  border-radius: 999px;
+  background: #f1edf5;
+  color: #5f5a6d;
+  font-size: 0.63rem;
+  font-weight: 700;
+}
+
+.receiver-gpu-list {
+  margin-top: 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.34rem;
+}
+
+.receiver-gpu-list p {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #7c8490;
+}
+
+.receiver-gpu-list div {
+  background: #f4eef9;
+  border-radius: 0.58rem;
+  padding: 0.34rem 0.42rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.receiver-gpu-list strong {
+  font-size: 0.73rem;
+  color: #55357b;
+}
+
+.receiver-gpu-list small {
+  font-size: 0.65rem;
+  color: #76648b;
+}
+
 .section-head {
   display: flex;
   justify-content: space-between;
@@ -793,7 +960,10 @@ tbody td {
 .theme-dark .node-card,
 .theme-dark .jobs-panel,
 .theme-dark .control-block,
-.theme-dark .sidebar-user {
+.theme-dark .sidebar-user,
+.theme-dark .receiver-discovery-panel,
+.theme-dark .receiver-card,
+.theme-dark .receiver-empty-card {
   background: #171c24;
   color: #eef1f7;
   border-color: #2a303b;
@@ -813,6 +983,21 @@ tbody td {
   background: #4e3271;
 }
 
+.theme-dark .receiver-scan-controls input,
+.theme-dark .receiver-gpu-list div,
+.theme-dark .receiver-meta span {
+  background: #1d232d;
+  color: #eef1f7;
+  border-color: #343b47;
+}
+
+.theme-dark .receiver-card-top p,
+.theme-dark .receiver-hint,
+.theme-dark .receiver-gpu-list p,
+.theme-dark .auto-toggle {
+  color: #b4bcc7;
+}
+
 @keyframes pulse {
   50% {
     opacity: 0;
@@ -825,6 +1010,10 @@ tbody td {
   }
 
   .node-cards {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .receiver-grid {
     grid-template-columns: 1fr 1fr;
   }
 }
@@ -864,6 +1053,14 @@ tbody td {
 
   .node-cards,
   .overview-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .receiver-scan-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .receiver-grid {
     grid-template-columns: 1fr;
   }
 }
