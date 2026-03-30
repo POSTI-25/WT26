@@ -5,7 +5,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ops.network_cli import DEFAULT_CONFIG_PATH, load_cli_config, scan_receivers
+from ops.network_cli import (
+    DEFAULT_CONFIG_PATH,
+    load_cli_config,
+    probe_receiver,
+    scan_receivers,
+)
 
 
 DEFAULT_SCAN_STORE = Path("data/gpu/network_gpu_store.json")
@@ -54,6 +59,8 @@ def discover_receivers_to_store(
     port: int | None,
     timeout: float | None,
     workers: int | None,
+    host: str | None,
+    direct: bool,
     scan_store_path: Path,
 ) -> dict[str, Any]:
     effective_subnet = subnet or config["discovery_subnet"]
@@ -61,13 +68,60 @@ def discover_receivers_to_store(
     effective_timeout = float(timeout if timeout is not None else config["scan_timeout_seconds"])
     effective_workers = int(workers if workers is not None else config["scan_max_workers"])
 
-    receivers = scan_receivers(
-        subnet=effective_subnet,
-        port=effective_port,
-        timeout=effective_timeout,
-        max_workers=effective_workers,
-        max_hosts=int(config["max_scan_hosts"]),
-    )
+    target_host = (host or str(config.get("target_host", "")).strip()).strip()
+
+    if direct:
+        if not target_host:
+            raise RuntimeError("Direct mode requires --host or target_host in config.")
+        if target_host in ("127.0.0.1", "localhost"):
+            raise RuntimeError(
+                "Direct mode target_host is localhost. Set --host to your friend's machine "
+                "hostname or IP, or update config/cli_config.json target_host."
+            )
+
+        candidate = probe_receiver(
+            host=target_host,
+            port=effective_port,
+            timeout=max(effective_timeout, 1.0),
+        )
+        receivers = [candidate] if candidate is not None else []
+        if not receivers:
+            raise RuntimeError(
+                f"Direct connect failed to {target_host}:{effective_port}. "
+                "Ensure receiver_service is running and firewall allows the port."
+            )
+    else:
+        receivers = scan_receivers(
+            subnet=effective_subnet,
+            port=effective_port,
+            timeout=effective_timeout,
+            max_workers=effective_workers,
+            max_hosts=int(config["max_scan_hosts"]),
+        )
+
+    if not direct and not receivers:
+        fallback_hosts: list[str] = []
+        if host:
+            fallback_hosts.append(host)
+
+        cfg_target_host = str(config.get("target_host", "")).strip()
+        if cfg_target_host and cfg_target_host not in ("127.0.0.1", "localhost"):
+            fallback_hosts.append(cfg_target_host)
+
+        tried: set[str] = set()
+        for fallback_host in fallback_hosts:
+            if fallback_host in tried:
+                continue
+            tried.add(fallback_host)
+            print(f"[distributed] Scan found 0 receivers. Trying direct host fallback: {fallback_host}")
+            candidate = probe_receiver(
+                host=fallback_host,
+                port=effective_port,
+                timeout=max(effective_timeout, 1.0),
+            )
+            if candidate is not None:
+                receivers.append(candidate)
+                break
 
     store = {
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -288,6 +342,16 @@ def build_parser() -> argparse.ArgumentParser:
         "discover", help="Discover receiver nodes and store scan results."
     )
     discover_parser.add_argument("--subnet", default=None, help="CIDR subnet override.")
+    discover_parser.add_argument(
+        "--host",
+        default=None,
+        help="Direct receiver host fallback if subnet scan finds 0 receivers.",
+    )
+    discover_parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="Skip subnet scan and connect directly to --host (or config target_host).",
+    )
     discover_parser.add_argument("--port", type=int, default=None, help="Receiver port override.")
     discover_parser.add_argument("--timeout", type=float, default=None, help="Probe timeout override.")
     discover_parser.add_argument("--workers", type=int, default=None, help="Scan thread count override.")
@@ -340,6 +404,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run discover + split + send in one command.",
     )
     full_parser.add_argument("--subnet", default=None, help="CIDR subnet override.")
+    full_parser.add_argument(
+        "--host",
+        default=None,
+        help="Direct receiver host fallback if subnet scan finds 0 receivers.",
+    )
+    full_parser.add_argument(
+        "--direct",
+        action="store_true",
+        help="Skip subnet scan and connect directly to --host (or config target_host).",
+    )
     full_parser.add_argument("--port", type=int, default=None, help="Receiver port override.")
     full_parser.add_argument("--timeout", type=float, default=None, help="Probe timeout override.")
     full_parser.add_argument("--workers", type=int, default=None, help="Scan thread count override.")
@@ -385,6 +459,8 @@ def main() -> None:
             port=args.port,
             timeout=args.timeout,
             workers=args.workers,
+            host=args.host,
+            direct=bool(args.direct),
             scan_store_path=to_abs(args.scan_store),
         )
         return
@@ -418,6 +494,8 @@ def main() -> None:
             port=args.port,
             timeout=args.timeout,
             workers=args.workers,
+            host=args.host,
+            direct=bool(args.direct),
             scan_store_path=to_abs(args.scan_store),
         )
         split_store = build_distributed_gpu_store(
