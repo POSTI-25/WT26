@@ -63,6 +63,7 @@ def get_local_ip(preferred_host: str) -> str:
 
 def enrich_report_with_socket_ips(report: dict, conn: socket.socket) -> dict:
     report_with_socket = dict(report)
+    report_with_socket["hostname"] = socket.gethostname()
     report_with_socket["socket_receiver_ip"] = get_socket_ip(conn, peer=False)
     report_with_socket["socket_peer_ip"] = get_socket_ip(conn, peer=True)
     return report_with_socket
@@ -243,6 +244,8 @@ def build_ping_reply(report):
         "gpu_count": int(report.get("gpu_count", 0)),
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
     }
+    if report.get("hostname"):
+        reply["hostname"] = report.get("hostname")
     if report.get("socket_receiver_ip"):
         reply["receiver_ip"] = report.get("socket_receiver_ip")
     if report.get("socket_peer_ip"):
