@@ -47,6 +47,7 @@ def load_cli_config(config_path: Path) -> dict[str, Any]:
         scan_max_workers = int(raw.get("scan_max_workers", 64))
         max_scan_hosts = int(raw.get("max_scan_hosts", 512))
         scan_store_file = str(raw.get("scan_store_file", "../data/gpu/network_gpu_store.json"))
+        ping_store_file = str(raw.get("ping_store_file", "../data/gpu/ping_gpu_snapshot.json"))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Config contains invalid value types: {exc}") from exc
 
@@ -70,6 +71,7 @@ def load_cli_config(config_path: Path) -> dict[str, Any]:
         "scan_max_workers": scan_max_workers,
         "max_scan_hosts": max_scan_hosts,
         "scan_store_file": scan_store_file,
+        "ping_store_file": ping_store_file,
     }
 
 
@@ -113,23 +115,19 @@ def probe_receiver(host: str, port: int, timeout: float) -> dict[str, Any] | Non
     for gpu in gpu_reply.get("gpus", []):
         gpu_cards.append(
             {
-                "index": gpu.get("index"),
                 "name": gpu.get("name"),
                 "usage_percent": gpu.get("utilization_gpu_percent"),
-                "memory_used_mb": gpu.get("memory_used_mb"),
-                "memory_total_mb": gpu.get("memory_total_mb"),
+                "memory_available_mb": gpu.get("memory_free_mb"),
+                "cuda_cores": gpu.get("cuda_cores"),
             }
         )
 
     return {
-        "host": host,
+        "ip_address": host,
         "port": port,
-        "ok": bool(gpu_reply.get("ok", False)),
         "source": gpu_reply.get("source", "unknown"),
         "gpu_count": int(gpu_reply.get("gpu_count", 0)),
         "gpu_cards": gpu_cards,
-        "ping": ping_reply,
-        "gpu_report": gpu_reply,
     }
 
 
@@ -159,7 +157,7 @@ def scan_receivers(
             if result is not None:
                 results.append(result)
 
-    results.sort(key=lambda item: ipaddress.ip_address(item["host"]))
+    results.sort(key=lambda item: ipaddress.ip_address(item["ip_address"]))
     return results
 
 
@@ -205,7 +203,6 @@ def run_scan(args, config, config_path: Path):
     store = {
         "updated_at_utc": datetime.now(timezone.utc).isoformat(),
         "subnet": subnet,
-        "port": port,
         "receiver_count": len(receivers),
         "receivers": receivers,
     }
@@ -215,16 +212,56 @@ def run_scan(args, config, config_path: Path):
     print(f"[cli] Receivers found: {len(receivers)}")
     for item in receivers:
         print(
-            "[cli] {host}:{port} | gpus={count} | source={source} | ok={ok}".format(
-                host=item.get("host"),
+            "[cli] {ip}:{port} | gpus={count} | source={source}".format(
+                ip=item.get("ip_address"),
                 port=item.get("port"),
                 count=item.get("gpu_count"),
                 source=item.get("source"),
-                ok=item.get("ok"),
             )
         )
 
     print(f"[cli] Stored network GPU details to: {store_path}")
+
+
+def run_ping(args, config, config_path: Path):
+    subnet = args.subnet or config["discovery_subnet"]
+    port = args.port if args.port is not None else config["target_port"]
+    timeout = args.timeout if args.timeout is not None else config["scan_timeout_seconds"]
+    workers = args.workers if args.workers is not None else config["scan_max_workers"]
+
+    # Ping command stores a temporary/reusable snapshot by default.
+    raw_store_file = args.store_file or config["ping_store_file"]
+    store_path = resolve_output_path(raw_store_file, config_path)
+
+    receivers = scan_receivers(
+        subnet=subnet,
+        port=port,
+        timeout=timeout,
+        max_workers=workers,
+        max_hosts=config["max_scan_hosts"],
+    )
+
+    store = {
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "subnet": subnet,
+        "receiver_count": len(receivers),
+        "receivers": receivers,
+    }
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
+
+    print(f"[cli] Pinged hosts in {subnet}; receivers found: {len(receivers)}")
+    for item in receivers:
+        print(
+            "[cli] {ip}:{port} | gpus={count} | source={source}".format(
+                ip=item.get("ip_address"),
+                port=item.get("port"),
+                count=item.get("gpu_count"),
+                source=item.get("source"),
+            )
+        )
+
+    print(f"[cli] Stored temporary ping GPU snapshot to: {store_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -292,6 +329,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override output JSON file path for scan results.",
     )
 
+    ping_parser = subparsers.add_parser(
+        "ping",
+        help="Ping hotspot subnet, collect GPU info from reachable receivers, and store snapshot JSON.",
+    )
+    ping_parser.add_argument(
+        "--subnet",
+        default=None,
+        help="CIDR subnet to ping (example: 192.168.1.0/24).",
+    )
+    ping_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Override receiver port from config.",
+    )
+    ping_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-host ping/GPU request timeout in seconds.",
+    )
+    ping_parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Worker thread count for parallel subnet probing.",
+    )
+    ping_parser.add_argument(
+        "--store-file",
+        default=None,
+        help="Override output JSON path for temporary ping snapshot.",
+    )
+
     return parser
 
 
@@ -309,6 +379,8 @@ def main() -> None:
         run_connect(args, config)
     elif args.command == "scan":
         run_scan(args, config, config_path)
+    elif args.command == "ping":
+        run_ping(args, config, config_path)
 
 
 if __name__ == "__main__":

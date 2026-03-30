@@ -1,0 +1,2 @@
+# Standard library only, except for optional NVML GPU reporting support.
+nvidia-ml-py

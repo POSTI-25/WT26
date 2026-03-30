@@ -3,4 +3,6 @@ __pycache__/
 node_modules/
 transfer_dashboard_react/node_modules/
 transfer_dashboard_react/dist/
-incoming
+
+
+incoming/
