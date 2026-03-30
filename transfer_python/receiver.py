@@ -2,7 +2,33 @@ import argparse
 import json
 import socket
 import subprocess
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+
+
+CUDA_CORES_PER_SM = {
+    (2, 0): 32,
+    (2, 1): 48,
+    (3, 0): 192,
+    (3, 2): 192,
+    (3, 5): 192,
+    (3, 7): 192,
+    (5, 0): 128,
+    (5, 2): 128,
+    (5, 3): 128,
+    (6, 0): 64,
+    (6, 1): 128,
+    (6, 2): 128,
+    (7, 0): 64,
+    (7, 2): 64,
+    (7, 5): 64,
+    (8, 0): 64,
+    (8, 6): 128,
+    (8, 7): 128,
+    (8, 9): 128,
+    (9, 0): 128,
+}
 
 
 def receive_line(reader) -> str:
@@ -10,6 +36,55 @@ def receive_line(reader) -> str:
     if not line:
         raise ConnectionError("Connection closed while reading line.")
     return line.decode("utf-8").rstrip("\n")
+
+
+def get_socket_ip(sock: socket.socket, peer: bool) -> str | None:
+    try:
+        endpoint = sock.getpeername() if peer else sock.getsockname()
+    except OSError:
+        return None
+
+    if isinstance(endpoint, tuple) and endpoint:
+        return str(endpoint[0])
+    return None
+
+
+def enrich_report_with_socket_ips(report: dict, conn: socket.socket) -> dict:
+    report_with_socket = dict(report)
+    report_with_socket["socket_receiver_ip"] = get_socket_ip(conn, peer=False)
+    report_with_socket["socket_peer_ip"] = get_socket_ip(conn, peer=True)
+    return report_with_socket
+
+
+def get_cuda_core_fields_with_nvml(pynvml, handle):
+    cuda_cores = None
+    sm_count = None
+    compute_capability = None
+
+    if hasattr(pynvml, "nvmlDeviceGetNumGpuCores"):
+        try:
+            cuda_cores = int(pynvml.nvmlDeviceGetNumGpuCores(handle))
+        except Exception:
+            cuda_cores = None
+
+    try:
+        sm_count = int(pynvml.nvmlDeviceGetMultiprocessorCount(handle))
+    except Exception:
+        sm_count = None
+
+    try:
+        major, minor = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+        major = int(major)
+        minor = int(minor)
+        compute_capability = f"{major}.{minor}"
+        if cuda_cores is None and sm_count is not None:
+            cores_per_sm = CUDA_CORES_PER_SM.get((major, minor))
+            if cores_per_sm is not None:
+                cuda_cores = sm_count * cores_per_sm
+    except Exception:
+        compute_capability = None
+
+    return cuda_cores, sm_count, compute_capability
 
 
 def query_gpus_with_nvml():
@@ -45,6 +120,10 @@ def query_gpus_with_nvml():
             except Exception:
                 temperature_c = None
 
+            cuda_cores, sm_count, compute_capability = get_cuda_core_fields_with_nvml(
+                pynvml, handle
+            )
+
             gpus.append(
                 {
                     "index": index,
@@ -55,6 +134,9 @@ def query_gpus_with_nvml():
                     "memory_free_mb": int(mem.free // (1024 * 1024)),
                     "utilization_gpu_percent": int(util.gpu),
                     "temperature_c": temperature_c,
+                    "cuda_cores": cuda_cores,
+                    "sm_count": sm_count,
+                    "compute_capability": compute_capability,
                     "source": "nvml",
                 }
             )
@@ -101,6 +183,9 @@ def query_gpus_with_nvidia_smi():
                 "memory_free_mb": int(parts[5]),
                 "utilization_gpu_percent": int(parts[6]),
                 "temperature_c": int(parts[7]),
+                "cuda_cores": None,
+                "sm_count": None,
+                "compute_capability": None,
                 "source": "nvidia-smi",
             }
         )
@@ -138,7 +223,32 @@ def get_gpu_report():
     }
 
 
+def build_ping_reply(report):
+    reply = {
+        "ok": bool(report.get("ok", False)),
+        "service": "gpu_receiver",
+        "source": report.get("source", "none"),
+        "gpu_count": int(report.get("gpu_count", 0)),
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    if report.get("socket_receiver_ip"):
+        reply["receiver_ip"] = report.get("socket_receiver_ip")
+    if report.get("socket_peer_ip"):
+        reply["peer_ip"] = report.get("socket_peer_ip")
+    return reply
+
+
 def print_gpu_report(report) -> None:
+    receiver_ip = report.get("socket_receiver_ip")
+    peer_ip = report.get("socket_peer_ip")
+    if receiver_ip or peer_ip:
+        print(
+            "[receiver] Socket IPs | receiver_ip={receiver_ip} | peer_ip={peer_ip}".format(
+                receiver_ip=receiver_ip or "unknown",
+                peer_ip=peer_ip or "unknown",
+            )
+        )
+
     if not report.get("ok", False):
         print(f"[receiver] GPU probe unavailable: {report.get('message', 'unknown reason')}")
         return
@@ -148,25 +258,88 @@ def print_gpu_report(report) -> None:
     )
     for gpu in report.get("gpus", []):
         print(
-            "[receiver] GPU {index}: {name} | util={util}% | mem={used}/{total} MB | temp={temp}".format(
+            "[receiver] GPU {index}: {name} | util={util}% | mem={used}/{total} MB | "
+            "cuda_cores={cuda_cores} | sm_count={sm_count} | cc={cc} | temp={temp}".format(
                 index=gpu.get("index"),
                 name=gpu.get("name"),
                 util=gpu.get("utilization_gpu_percent"),
                 used=gpu.get("memory_used_mb"),
                 total=gpu.get("memory_total_mb"),
+                cuda_cores=(
+                    gpu.get("cuda_cores") if gpu.get("cuda_cores") is not None else "unknown"
+                ),
+                sm_count=(gpu.get("sm_count") if gpu.get("sm_count") is not None else "unknown"),
+                cc=(
+                    gpu.get("compute_capability")
+                    if gpu.get("compute_capability") is not None
+                    else "unknown"
+                ),
                 temp=gpu.get("temperature_c"),
             )
         )
 
 
-def handle_client(conn: socket.socket, output_dir: Path) -> None:
+def build_gpu_store(report):
+    gpu_cards = []
+    for gpu in report.get("gpus", []):
+        gpu_cards.append(
+            {
+                "index": gpu.get("index"),
+                "gpu_card": gpu.get("name"),
+                "gpu_usage_percent": gpu.get("utilization_gpu_percent"),
+                "cuda_cores": gpu.get("cuda_cores"),
+            }
+        )
+
+    return {
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "ok": report.get("ok", False),
+        "source": report.get("source"),
+        "gpu_cards": gpu_cards,
+    }
+
+
+def write_gpu_store(report, gpu_store_path: Path) -> None:
+    store = build_gpu_store(report)
+    gpu_store_path.parent.mkdir(parents=True, exist_ok=True)
+    gpu_store_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
+
+
+def write_gpu_status(report, gpu_status_path: Path) -> None:
+    gpu_status_path.parent.mkdir(parents=True, exist_ok=True)
+    gpu_status_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+
+
+def refresh_gpu_files(gpu_store_path: Path, gpu_status_path: Path | None):
+    latest_gpu_report = get_gpu_report()
+    write_gpu_store(latest_gpu_report, gpu_store_path)
+    if gpu_status_path is not None:
+        write_gpu_status(latest_gpu_report, gpu_status_path)
+    return latest_gpu_report
+
+
+def handle_client(
+    conn: socket.socket,
+    output_dir: Path,
+    gpu_store_path: Path,
+    gpu_status_path: Path | None,
+) -> None:
     with conn:
         reader = conn.makefile("rb")
         metadata_line = receive_line(reader)
         metadata = json.loads(metadata_line)
 
+        latest_gpu_report = refresh_gpu_files(gpu_store_path, gpu_status_path)
+        latest_gpu_report = enrich_report_with_socket_ips(latest_gpu_report, conn)
+
+        if metadata.get("request") == "ping":
+            print_gpu_report(latest_gpu_report)
+            conn.sendall((json.dumps(build_ping_reply(latest_gpu_report)) + "\n").encode("utf-8"))
+            return
+
         if metadata.get("request") == "gpu_info":
-            conn.sendall((json.dumps(get_gpu_report()) + "\n").encode("utf-8"))
+            print_gpu_report(latest_gpu_report)
+            conn.sendall((json.dumps(latest_gpu_report) + "\n").encode("utf-8"))
             return
 
         filename = Path(str(metadata["filename"])).name
@@ -215,6 +388,17 @@ def main() -> None:
         help="Optional path to write GPU report JSON on startup.",
     )
     parser.add_argument(
+        "--gpu-store-file",
+        default="gpu_store.json",
+        help="Path to store receiver GPU card + usage summary (default: gpu_store.json).",
+    )
+    parser.add_argument(
+        "--gpu-refresh-seconds",
+        type=float,
+        default=2.0,
+        help="How often to refresh stored GPU usage while server is running (default: 2.0).",
+    )
+    parser.add_argument(
         "--gpu-only",
         action="store_true",
         help="Print contributor GPU details and exit.",
@@ -223,11 +407,14 @@ def main() -> None:
 
     gpu_report = get_gpu_report()
     print_gpu_report(gpu_report)
+    gpu_store_path = Path(args.gpu_store_file)
+    write_gpu_store(gpu_report, gpu_store_path)
+    print(f"[receiver] Stored GPU summary at {gpu_store_path}")
+
+    gpu_status_path = Path(args.gpu_status_file) if args.gpu_status_file else None
     if args.gpu_status_file:
-        status_path = Path(args.gpu_status_file)
-        status_path.parent.mkdir(parents=True, exist_ok=True)
-        status_path.write_text(json.dumps(gpu_report, indent=2), encoding="utf-8")
-        print(f"[receiver] Wrote GPU report to {status_path}")
+        write_gpu_status(gpu_report, gpu_status_path)
+        print(f"[receiver] Wrote GPU report to {gpu_status_path}")
 
     if args.gpu_only:
         return
@@ -237,14 +424,26 @@ def main() -> None:
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.port))
     server.listen(5)
+    server.settimeout(1.0)
 
     print(f"[receiver] Listening on {args.host}:{args.port}")
+    refresh_interval = max(0.5, float(args.gpu_refresh_seconds))
+    next_refresh = time.monotonic() + refresh_interval
     try:
         while True:
-            conn, addr = server.accept()
+            now = time.monotonic()
+            if now >= next_refresh:
+                refresh_gpu_files(gpu_store_path, gpu_status_path)
+                next_refresh = now + refresh_interval
+
+            try:
+                conn, addr = server.accept()
+            except socket.timeout:
+                continue
+
             print(f"[receiver] Connection from {addr[0]}:{addr[1]}")
             try:
-                handle_client(conn, output_dir)
+                handle_client(conn, output_dir, gpu_store_path, gpu_status_path)
             except Exception as exc:
                 print(f"\n[receiver] Error: {exc}")
                 try:
