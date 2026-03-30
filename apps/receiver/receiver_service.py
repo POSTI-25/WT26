@@ -317,7 +317,6 @@ def build_gpu_store(report, ip_address: str):
         )
 
     return {
-        "updated_at_utc": report.get("sampled_at_utc") or datetime.now(timezone.utc).isoformat(),
         "ip_address": ip_address,
         "gpu_count": len(gpu_cards),
         "gpu_cards": gpu_cards,
