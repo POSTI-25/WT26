@@ -6,6 +6,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "incoming"
+DEFAULT_GPU_STORE_FILE = PROJECT_ROOT / "data" / "gpu" / "receiver_gpu_store.json"
+
 
 CUDA_CORES_PER_SM = {
     (2, 0): 32,
@@ -395,8 +400,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=50051, help="Bind port (default: 50051)")
     parser.add_argument(
         "--output-dir",
-        default="data/incoming",
-        help="Directory where files are written (default: data/incoming).",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help=f"Directory where files are written (default: {DEFAULT_OUTPUT_DIR}).",
     )
     parser.add_argument(
         "--gpu-status-file",
@@ -405,8 +410,11 @@ def main() -> None:
     )
     parser.add_argument(
         "--gpu-store-file",
-        default="data/gpu/receiver_gpu_store.json",
-        help="Path to store receiver GPU card + usage summary (default: data/gpu/receiver_gpu_store.json).",
+        default=str(DEFAULT_GPU_STORE_FILE),
+        help=(
+            "Path to store receiver GPU card + usage summary "
+            f"(default: {DEFAULT_GPU_STORE_FILE})."
+        ),
     )
     parser.add_argument(
         "--gpu-refresh-seconds",
@@ -424,11 +432,15 @@ def main() -> None:
     gpu_report = get_gpu_report()
     print_gpu_report(gpu_report)
     local_ip = get_local_ip(args.host)
-    gpu_store_path = Path(args.gpu_store_file)
+    gpu_store_path = Path(args.gpu_store_file).expanduser()
+    if not gpu_store_path.is_absolute():
+        gpu_store_path = PROJECT_ROOT / gpu_store_path
     write_gpu_store(gpu_report, gpu_store_path, local_ip)
     print(f"[receiver] Stored GPU summary at {gpu_store_path}")
 
-    gpu_status_path = Path(args.gpu_status_file) if args.gpu_status_file else None
+    gpu_status_path = Path(args.gpu_status_file).expanduser() if args.gpu_status_file else None
+    if gpu_status_path is not None and not gpu_status_path.is_absolute():
+        gpu_status_path = PROJECT_ROOT / gpu_status_path
     if args.gpu_status_file:
         write_gpu_status(gpu_report, gpu_status_path)
         print(f"[receiver] Wrote GPU report to {gpu_status_path}")
@@ -436,7 +448,9 @@ def main() -> None:
     if args.gpu_only:
         return
 
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).expanduser()
+    if not output_dir.is_absolute():
+        output_dir = PROJECT_ROOT / output_dir
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.port))

@@ -4,13 +4,17 @@ from pathlib import Path
 
 from receiver_service import get_gpu_report, get_local_ip, print_gpu_report, write_gpu_store
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+DEFAULT_GPU_STORE_FILE = PROJECT_ROOT / "data" / "gpu" / "receiver_gpu_store.json"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Print local contributor GPU details.")
     parser.add_argument(
         "--gpu-store-file",
-        default="data/gpu/receiver_gpu_store.json",
-        help="Path to write receiver GPU summary JSON (default: data/gpu/receiver_gpu_store.json).",
+        default=str(DEFAULT_GPU_STORE_FILE),
+        help=f"Path to write receiver GPU summary JSON (default: {DEFAULT_GPU_STORE_FILE}).",
     )
     parser.add_argument(
         "--host",
@@ -32,7 +36,9 @@ def main() -> None:
     report = get_gpu_report()
     if not args.no_write_store:
         local_ip = get_local_ip(args.host)
-        gpu_store_path = Path(args.gpu_store_file)
+        gpu_store_path = Path(args.gpu_store_file).expanduser()
+        if not gpu_store_path.is_absolute():
+            gpu_store_path = PROJECT_ROOT / gpu_store_path
         write_gpu_store(report, gpu_store_path, local_ip)
         print(f"[receiver] Stored GPU summary at {gpu_store_path}")
 
