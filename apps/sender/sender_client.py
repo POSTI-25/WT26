@@ -239,9 +239,20 @@ def send_json_request(host: str, port: int, payload: dict[str, Any], timeout: fl
 
 def probe_gpu_node(host: str, port: int, timeout: float) -> dict[str, Any] | None:
     try:
-        gpu_reply = send_json_request(host, port, {"request": "gpu_info"}, timeout)
+        ping_reply = send_json_request(host, port, {"request": "ping"}, timeout)
     except Exception:
         return None
+
+    try:
+        gpu_reply = send_json_request(host, port, {"request": "gpu_info"}, timeout)
+    except Exception as exc:
+        gpu_reply = {
+            "ok": False,
+            "gpu_count": 0,
+            "gpus": [],
+            "source": ping_reply.get("source", "unknown"),
+            "message": f"gpu_info request failed: {exc}",
+        }
 
     gpu_cards = []
     for gpu in gpu_reply.get("gpus", []):
@@ -258,14 +269,20 @@ def probe_gpu_node(host: str, port: int, timeout: float) -> dict[str, Any] | Non
         )
 
     return {
-        "ip_address": gpu_reply.get("socket_receiver_ip") or host,
+        "ip_address": (
+            gpu_reply.get("socket_receiver_ip")
+            or ping_reply.get("receiver_ip")
+            or host
+        ),
         "requested_host": host,
         "port": port,
         "ok": bool(gpu_reply.get("ok", False)),
-        "hostname": gpu_reply.get("hostname"),
-        "source": gpu_reply.get("source", "unknown"),
+        "service": ping_reply.get("service", "unknown"),
+        "hostname": gpu_reply.get("hostname") or ping_reply.get("hostname"),
+        "source": gpu_reply.get("source") or ping_reply.get("source", "unknown"),
         "gpu_count": int(gpu_reply.get("gpu_count", 0)),
         "gpu_cards": gpu_cards,
+        "ping": ping_reply,
         "gpu_report": gpu_reply,
     }
 
@@ -514,7 +531,7 @@ def run_send_all(args) -> None:
     raw_store_file = args.store_file or config["sender_store_file"]
     store_path = resolve_output_path(raw_store_file, config_path)
 
-    scanned_subnets, _, gpu_nodes = scan_gpu_nodes(
+    scanned_subnets, reachable_receivers, gpu_nodes = scan_gpu_nodes(
         subnets=requested_subnets,
         port=port,
         timeout=timeout,
@@ -523,10 +540,11 @@ def run_send_all(args) -> None:
         local_ips=local_ips,
         include_self=args.include_self,
     )
+    candidate_nodes = gpu_nodes if args.require_gpu else reachable_receivers
 
     targets: list[tuple[str, int]] = []
     seen_targets: set[tuple[str, int]] = set()
-    for node in gpu_nodes:
+    for node in candidate_nodes:
         target_host = str(node.get("ip_address") or node.get("requested_host") or "").strip()
         target_port = int(node.get("port") or port)
         if not target_host:
@@ -538,6 +556,7 @@ def run_send_all(args) -> None:
         targets.append(key)
 
     if not targets:
+        no_target_label = "GPU receiver" if args.require_gpu else "receiver"
         snapshot = {
             "updated_at_utc": datetime.now(timezone.utc).isoformat(),
             "mode": "sender_send_all",
@@ -545,6 +564,9 @@ def run_send_all(args) -> None:
             "scanned_subnets": scanned_subnets,
             "file_path": str(file_path),
             "file_size_bytes": file_path.stat().st_size,
+            "target_filter": "gpu_only" if args.require_gpu else "all_receivers",
+            "discovered_receiver_count": len(reachable_receivers),
+            "discovered_gpu_node_count": len(gpu_nodes),
             "target_count": 0,
             "success_count": 0,
             "failure_count": 0,
@@ -552,7 +574,8 @@ def run_send_all(args) -> None:
         }
         write_snapshot_file(snapshot, store_path)
         print(
-            "[sender] No reachable GPU receiver nodes found in: {subnets}".format(
+            "[sender] No reachable {label} nodes found in: {subnets}".format(
+                label=no_target_label,
                 subnets=", ".join(scanned_subnets),
             )
         )
@@ -587,6 +610,9 @@ def run_send_all(args) -> None:
         "scanned_subnets": scanned_subnets,
         "file_path": str(file_path),
         "file_size_bytes": file_path.stat().st_size,
+        "target_filter": "gpu_only" if args.require_gpu else "all_receivers",
+        "discovered_receiver_count": len(reachable_receivers),
+        "discovered_gpu_node_count": len(gpu_nodes),
         "target_count": len(results),
         "success_count": success_count,
         "failure_count": fail_count,
@@ -601,8 +627,10 @@ def run_send_all(args) -> None:
         )
     )
     print(
-        "[sender] File: {file_name} | targets: {targets} | success: {ok} | failed: {fail}".format(
+        "[sender] File: {file_name} | discovered receivers: {receivers} | discovered gpu nodes: {gpu_nodes} | targets: {targets} | success: {ok} | failed: {fail}".format(
             file_name=file_path.name,
+            receivers=len(reachable_receivers),
+            gpu_nodes=len(gpu_nodes),
             targets=len(results),
             ok=success_count,
             fail=fail_count,
@@ -748,6 +776,11 @@ def main() -> None:
         "--include-self",
         action="store_true",
         help="Include local machine IP(s) in --discover-gpus/--send-all target set.",
+    )
+    parser.add_argument(
+        "--require-gpu",
+        action="store_true",
+        help="For --send-all, target only receivers that report gpu_count > 0.",
     )
     parser.add_argument(
         "--send-timeout",
