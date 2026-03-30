@@ -6,8 +6,9 @@ It uses only Python standard library (`socket`, `json`, `argparse`) so there are
 
 ## Project Structure
 
-- `python/receiver.py`
-- `python/sender.py`
+- `transfer_python/receiver.py`
+- `transfer_python/sender.py`
+- `legacy_grpc_proto/transfer.proto` (legacy from previous C++/gRPC iteration)
 
 ## Prerequisites
 
@@ -18,13 +19,13 @@ It uses only Python standard library (`socket`, `json`, `argparse`) so there are
 On receiver node:
 
 ```powershell
-python .\python\receiver.py --host 0.0.0.0 --port 50051 --output-dir .\incoming
+python .\transfer_python\receiver.py --host 0.0.0.0 --port 50051 --output-dir .\incoming
 ```
 
 On sender node:
 
 ```powershell
-python .\python\sender.py <RECEIVER_IP> .\path\to\file.bin --port 50051 --chunk-size 1048576
+python .\transfer_python\sender.py <RECEIVER_IP> .\path\to\file.bin --port 50051 --chunk-size 1048576
 ```
 
 ## Protocol
