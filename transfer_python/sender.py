@@ -14,7 +14,7 @@ def receive_line(reader) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simple TCP file sender.")
     parser.add_argument("receiver_host", help="Receiver IP/hostname")
-    parser.add_argument("file_path", help="Path to file to send")
+    parser.add_argument("file_path", nargs="?", help="Path to file to send")
     parser.add_argument("--port", type=int, default=50051, help="Receiver port (default: 50051)")
     parser.add_argument(
         "--chunk-size",
@@ -22,7 +22,23 @@ def main() -> None:
         default=1024 * 1024,
         help="Chunk size in bytes (default: 1048576)",
     )
+    parser.add_argument(
+        "--gpu-info",
+        action="store_true",
+        help="Request contributor GPU details instead of sending a file.",
+    )
     args = parser.parse_args()
+
+    if args.gpu_info:
+        with socket.create_connection((args.receiver_host, args.port), timeout=30) as sock:
+            reader = sock.makefile("rb")
+            sock.sendall((json.dumps({"request": "gpu_info"}) + "\n").encode("utf-8"))
+            reply = json.loads(receive_line(reader))
+            print(json.dumps(reply, indent=2))
+        return
+
+    if not args.file_path:
+        parser.error("file_path is required unless --gpu-info is used.")
 
     file_path = Path(args.file_path)
     if not file_path.exists():
