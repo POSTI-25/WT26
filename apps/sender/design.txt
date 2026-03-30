@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+
+<html class="light" lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Distributed Compute Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script id="tailwind-config">
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              "surface-variant": "#e3e2e3",
+              "inverse-primary": "#dbb8ff",
+              "surface-container": "#eeedee",
+              "surface-container-low": "#f4f3f4",
+              "on-secondary-fixed-variant": "#4e4448",
+              "inverse-on-surface": "#f1f0f1",
+              "primary-fixed-dim": "#dbb8ff",
+              "outline": "#77767d",
+              "surface-dim": "#dadadb",
+              "primary-fixed": "#efdbff",
+              "on-primary": "#ffffff",
+              "secondary": "#665c60",
+              "on-surface-variant": "#46464c",
+              "on-background": "#1a1c1d",
+              "tertiary-container": "#f4e1ff",
+              "tertiary": "#7b41b3",
+              "on-primary-fixed": "#29074a",
+              "on-tertiary-fixed-variant": "#622599",
+              "on-tertiary-fixed": "#2c0050",
+              "surface-container-lowest": "#ffffff",
+              "on-error-container": "#93000a",
+              "tertiary-fixed-dim": "#ddb7ff",
+              "error-container": "#ffdad6",
+              "tertiary-fixed": "#f0dbff",
+              "surface": "#faf9fa",
+              "on-tertiary": "#ffffff",
+              "primary": "#6f5092",
+              "surface-tint": "#6f5092",
+              "on-secondary-fixed": "#211a1d",
+              "error": "#ba1a1a",
+              "on-surface": "#1a1c1d",
+              "secondary-fixed": "#eddfe4",
+              "on-primary-container": "#79599c",
+              "background": "#faf9fa",
+              "surface-container-high": "#e9e8e9",
+              "on-secondary": "#ffffff",
+              "secondary-container": "#eadce1",
+              "primary-container": "#f3e1ff",
+              "on-secondary-container": "#6a6064",
+              "secondary-fixed-dim": "#d1c3c8",
+              "on-error": "#ffffff",
+              "inverse-surface": "#2f3032",
+              "surface-container-highest": "#e3e2e3",
+              "on-tertiary-container": "#854bbd",
+              "on-primary-fixed-variant": "#573878",
+              "outline-variant": "#c7c5cc",
+              "surface-bright": "#faf9fa"
+            },
+            fontFamily: {
+              "headline": ["Plus Jakarta Sans"],
+              "body": ["Plus Jakarta Sans"],
+              "label": ["Plus Jakarta Sans"]
+            },
+            borderRadius: {"DEFAULT": "1rem", "lg": "2rem", "xl": "3rem", "full": "9999px"},
+          },
+        },
+      }
+    </script>
+<style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #faf9fa; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+        }
+        .material-symbols-outlined {
+            font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+        }
+    </style>
+</head>
+<body class="text-on-background selection:bg-primary-container selection:text-primary">
+<!-- TOP BAR (Shared Component) -->
+<header class="fixed top-0 w-full z-50 px-6 py-4 bg-white/70 dark:bg-slate-900/70 backdrop-blur-xl shadow-[0_20px_50px_rgba(111,80,146,0.05)]">
+<div class="flex justify-between items-center w-full mx-auto">
+<div class="flex items-center gap-3">
+<div class="w-10 h-10 bg-primary rounded-xl flex items-center justify-center shadow-lg shadow-primary/20">
+<span class="material-symbols-outlined text-white" style="font-variation-settings: 'FILL' 1;">hub</span>
+</div>
+<h1 class="text-xl font-bold text-slate-900 dark:text-slate-50 font-['Plus_Jakarta_Sans'] tracking-tight">Distributed Compute Dashboard</h1>
+</div>
+<div class="flex items-center gap-4">
+<button class="p-2 text-slate-500 hover:bg-surface-container rounded-full transition-all active:scale-95">
+<span class="material-symbols-outlined">refresh</span>
+</button>
+<button class="p-2 text-slate-500 hover:bg-surface-container rounded-full transition-all active:scale-95">
+<span class="material-symbols-outlined">dark_mode</span>
+</button>
+<button class="bg-primary text-on-primary px-6 py-2.5 rounded-full font-semibold flex items-center gap-2 hover:scale-105 transition-transform duration-200 shadow-xl shadow-primary/30 active:opacity-80">
+<span class="material-symbols-outlined text-sm">rocket_launch</span>
+                    Run Demo
+                </button>
+</div>
+</div>
+</header>
+<!-- SIDEBAR (Shared Component) -->
+<aside class="fixed left-0 top-0 h-full w-64 pt-24 bg-slate-50 dark:bg-slate-950 flex flex-col space-y-2 border-r border-transparent">
+<div class="px-6 mb-8">
+<h2 class="text-lg font-black text-purple-900 dark:text-purple-100 font-['Plus_Jakarta_Sans']">Compute Engine</h2>
+<p class="text-xs text-slate-400 font-medium">V-1.0.4</p>
+</div>
+<nav class="flex-1 flex flex-col space-y-1">
+<!-- Active Tab: Dashboard -->
+<a class="text-purple-700 dark:text-purple-300 bg-purple-100/50 dark:bg-purple-900/30 rounded-r-full py-3 px-6 border-l-4 border-purple-600 flex items-center gap-4 font-['Plus_Jakarta_Sans'] text-sm font-medium transition-transform active:translate-x-1" href="#">
+<span class="material-symbols-outlined" style="font-variation-settings: 'FILL' 1;">dashboard</span>
+                Dashboard
+            </a>
+<a class="text-slate-500 dark:text-slate-400 py-3 px-6 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors flex items-center gap-4 font-['Plus_Jakarta_Sans'] text-sm font-medium" href="#">
+<span class="material-symbols-outlined">dns</span>
+                Nodes
+            </a>
+<a class="text-slate-500 dark:text-slate-400 py-3 px-6 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors flex items-center gap-4 font-['Plus_Jakarta_Sans'] text-sm font-medium" href="#">
+<span class="material-symbols-outlined">terminal</span>
+                Jobs
+            </a>
+<a class="text-slate-500 dark:text-slate-400 py-3 px-6 hover:text-purple-500 hover:bg-purple-50 dark:hover:bg-purple-900/20 transition-colors flex items-center gap-4 font-['Plus_Jakarta_Sans'] text-sm font-medium" href="#">
+<span class="material-symbols-outlined">list_alt</span>
+                Logs
+            </a>
+</nav>
+<div class="p-6 mt-auto">
+<div class="bg-surface-container-low p-4 rounded-xl flex items-center gap-3">
+<div class="w-10 h-10 rounded-full bg-secondary-container flex items-center justify-center">
+<span class="material-symbols-outlined text-on-secondary-container">person</span>
+</div>
+<div class="overflow-hidden">
+<p class="text-xs font-bold truncate">System Admin</p>
+<p class="text-[10px] text-slate-400 uppercase tracking-widest">Online</p>
+</div>
+</div>
+</div>
+</aside>
+<!-- MAIN CONTENT AREA -->
+<main class="ml-64 pt-28 px-8 pb-12 min-h-screen">
+<!-- CLUSTER OVERVIEW -->
+<section class="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+<!-- Active Nodes Card -->
+<div class="bg-surface-container-low p-6 rounded-xl border border-white/40 shadow-sm relative overflow-hidden group">
+<div class="relative z-10">
+<p class="text-sm font-semibold text-slate-500 mb-1">Active Nodes</p>
+<h3 class="text-4xl font-extrabold text-on-background">3</h3>
+<div class="mt-4 flex items-center gap-1 text-xs text-green-600 font-bold bg-green-50 px-2 py-1 rounded-full w-fit">
+<span class="material-symbols-outlined text-xs">trending_up</span> 100% Availability
+                    </div>
+</div>
+<span class="material-symbols-outlined absolute -bottom-4 -right-4 text-8xl text-primary/5 group-hover:scale-110 transition-transform">memory</span>
+</div>
+<!-- Running Jobs Card -->
+<div class="bg-primary-container p-6 rounded-xl border border-white/40 shadow-sm relative overflow-hidden group">
+<div class="relative z-10">
+<p class="text-sm font-semibold text-on-primary-container mb-1">Running Jobs</p>
+<h3 class="text-4xl font-extrabold text-primary">2</h3>
+<div class="mt-4 flex items-center gap-1 text-xs text-primary font-bold bg-white/50 px-2 py-1 rounded-full w-fit">
+<span class="material-symbols-outlined text-xs">sync</span> Processing...
+                    </div>
+</div>
+<span class="material-symbols-outlined absolute -bottom-4 -right-4 text-8xl text-primary/10 group-hover:scale-110 transition-transform">analytics</span>
+</div>
+<!-- Idle Nodes Card -->
+<div class="bg-surface-container-low p-6 rounded-xl border border-white/40 shadow-sm relative overflow-hidden group">
+<div class="relative z-10">
+<p class="text-sm font-semibold text-slate-500 mb-1">Idle Nodes</p>
+<h3 class="text-4xl font-extrabold text-on-background">1</h3>
+<div class="mt-4 flex items-center gap-1 text-xs text-slate-500 font-bold bg-slate-200/50 px-2 py-1 rounded-full w-fit">
+<span class="material-symbols-outlined text-xs">sleep</span> Standby
+                    </div>
+</div>
+<span class="material-symbols-outlined absolute -bottom-4 -right-4 text-8xl text-slate-300/10 group-hover:scale-110 transition-transform">power_settings_new</span>
+</div>
+<!-- GPU Usage Card -->
+<div class="bg-surface-container-low p-6 rounded-xl border border-white/40 shadow-sm relative overflow-hidden group">
+<div class="relative z-10">
+<p class="text-sm font-semibold text-slate-500 mb-1">Total GPU Usage</p>
+<h3 class="text-4xl font-extrabold text-on-background">68<span class="text-xl font-normal opacity-50">%</span></h3>
+<div class="w-full h-1.5 bg-slate-200 rounded-full mt-4 overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 68%;"></div>
+</div>
+</div>
+<span class="material-symbols-outlined absolute -bottom-4 -right-4 text-8xl text-primary/5 group-hover:scale-110 transition-transform">grid_view</span>
+</div>
+</section>
+<!-- BENTO GRID SECTION: NODE STATUS & LIVE GRAPH -->
+<div class="grid grid-cols-12 gap-8 mb-8">
+<!-- NODE STATUS GRID (8 columns) -->
+<div class="col-span-12 lg:col-span-8">
+<div class="flex items-center justify-between mb-6">
+<h2 class="text-2xl font-bold tracking-tight text-on-background">Node Status Grid</h2>
+<span class="text-xs font-bold text-primary uppercase tracking-widest bg-primary/5 px-3 py-1.5 rounded-full">Real-time update</span>
+</div>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+<!-- Node 1: BUSY -->
+<div class="bg-surface-container-lowest p-6 rounded-xl border border-primary/10 shadow-xl shadow-primary/5 relative">
+<div class="flex justify-between items-start mb-6">
+<div>
+<h4 class="font-bold text-lg">Node 01</h4>
+<p class="text-xs text-slate-400">A100 Tensor Core</p>
+</div>
+<div class="flex items-center gap-1 px-2 py-1 bg-red-100 text-red-600 text-[10px] font-black rounded uppercase">
+<span class="w-2 h-2 rounded-full bg-red-600 animate-pulse"></span> BUSY
+                            </div>
+</div>
+<div class="space-y-4">
+<div>
+<div class="flex justify-between text-xs font-bold mb-1">
+<span>GPU Load</span>
+<span class="text-red-600">94%</span>
+</div>
+<div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-red-500 rounded-full" style="width: 94%;"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between text-xs font-bold mb-1">
+<span>Memory</span>
+<span>72%</span>
+</div>
+<div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 72%;"></div>
+</div>
+</div>
+</div>
+<div class="mt-6 pt-4 border-t border-slate-50">
+<p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Current Task</p>
+<p class="text-xs font-mono font-bold text-primary bg-primary/5 p-2 rounded truncate">job_123_training_model_v2</p>
+</div>
+</div>
+<!-- Node 2: FREE -->
+<div class="bg-surface-container-lowest p-6 rounded-xl border border-slate-100 shadow-sm relative">
+<div class="flex justify-between items-start mb-6">
+<div>
+<h4 class="font-bold text-lg">Node 02</h4>
+<p class="text-xs text-slate-400">A100 Tensor Core</p>
+</div>
+<div class="flex items-center gap-1 px-2 py-1 bg-green-100 text-green-600 text-[10px] font-black rounded uppercase">
+<span class="w-2 h-2 rounded-full bg-green-600"></span> FREE
+                            </div>
+</div>
+<div class="space-y-4">
+<div>
+<div class="flex justify-between text-xs font-bold mb-1">
+<span>GPU Load</span>
+<span class="text-green-600">0%</span>
+</div>
+<div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-green-500 rounded-full" style="width: 0%;"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between text-xs font-bold mb-1">
+<span>Memory</span>
+<span>4%</span>
+</div>
+<div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-primary rounded-full" style="width: 4%;"></div>
+</div>
+</div>
+</div>
+<div class="mt-6 pt-4 border-t border-slate-50">
+<p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Current Task</p>
+<p class="text-xs italic text-slate-300">Ready for assignment...</p>
+</div>
+</div>
+<!-- Node 3: IDLE -->
+<div class="bg-surface-container-lowest p-6 rounded-xl border border-slate-100 shadow-sm relative">
+<div class="flex justify-between items-start mb-6">
+<div>
+<h4 class="font-bold text-lg">Node 03</h4>
+<p class="text-xs text-slate-400">H100 Hopper</p>
+</div>
+<div class="flex items-center gap-1 px-2 py-1 bg-slate-100 text-slate-500 text-[10px] font-black rounded uppercase">
+<span class="w-2 h-2 rounded-full bg-slate-400"></span> IDLE
+                            </div>
+</div>
+<div class="space-y-4">
+<div>
+<div class="flex justify-between text-xs font-bold mb-1">
+<span>GPU Load</span>
+<span class="text-slate-400">0%</span>
+</div>
+<div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-slate-300 rounded-full" style="width: 0%;"></div>
+</div>
+</div>
+<div>
+<div class="flex justify-between text-xs font-bold mb-1">
+<span>Memory</span>
+<span>0%</span>
+</div>
+<div class="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
+<div class="h-full bg-slate-300 rounded-full" style="width: 0%;"></div>
+</div>
+</div>
+</div>
+<div class="mt-6 pt-4 border-t border-slate-50">
+<p class="text-[10px] text-slate-400 uppercase font-bold mb-1">Current Task</p>
+<p class="text-xs italic text-slate-300">Power saving mode</p>
+</div>
+</div>
+</div>
+</div>
+<!-- LIVE GPU GRAPH (4 columns) -->
+<div class="col-span-12 lg:col-span-4 flex flex-col">
+<div class="flex items-center justify-between mb-6">
+<h2 class="text-2xl font-bold tracking-tight text-on-background">Live Utilization</h2>
+</div>
+<div class="flex-1 bg-primary p-6 rounded-xl relative overflow-hidden flex flex-col shadow-2xl shadow-primary/20">
+<div class="relative z-10">
+<p class="text-white/60 text-xs font-bold uppercase tracking-widest mb-1">Real-time Flow</p>
+<h4 class="text-white font-bold text-xl">GPU Performance</h4>
+</div>
+<div class="flex-1 mt-4 relative flex items-end gap-1">
+<!-- Simulated Sparkline Grid -->
+<svg class="absolute inset-0 w-full h-full opacity-30" preserveaspectratio="none" viewbox="0 0 100 100">
+<path d="M0 80 Q 10 20, 20 50 T 40 10 T 60 70 T 80 30 T 100 60" fill="none" stroke="white" stroke-width="2" vector-effect="non-scaling-stroke"></path>
+</svg>
+<!-- Mini Bar indicators -->
+<div class="flex-1 h-32 flex items-end justify-between gap-1 z-10">
+<div class="w-full bg-white/20 rounded-t-sm" style="height: 40%"></div>
+<div class="w-full bg-white/40 rounded-t-sm" style="height: 65%"></div>
+<div class="w-full bg-white/60 rounded-t-sm" style="height: 85%"></div>
+<div class="w-full bg-white/30 rounded-t-sm" style="height: 45%"></div>
+<div class="w-full bg-white/20 rounded-t-sm" style="height: 30%"></div>
+<div class="w-full bg-white/50 rounded-t-sm" style="height: 70%"></div>
+<div class="w-full bg-white/80 rounded-t-sm" style="height: 95%"></div>
+<div class="w-full bg-white/40 rounded-t-sm" style="height: 55%"></div>
+<div class="w-full bg-white/30 rounded-t-sm" style="height: 25%"></div>
+</div>
+</div>
+<div class="mt-6 relative z-10 flex justify-between items-center bg-white/10 p-4 rounded-xl backdrop-blur-md">
+<div>
+<p class="text-[10px] text-white/50 font-black uppercase">Peak Voltage</p>
+<p class="text-white font-bold">1.24V</p>
+</div>
+<div>
+<p class="text-[10px] text-white/50 font-black uppercase">Temp</p>
+<p class="text-white font-bold">64°C</p>
+</div>
+</div>
+</div>
+</div>
+</div>
+<!-- JOB QUEUE & LIVE LOGS PANEL -->
+<section class="grid grid-cols-1 gap-8">
+<div class="bg-surface-container-lowest rounded-xl shadow-sm border border-slate-100 overflow-hidden">
+<div class="flex flex-col md:flex-row border-b border-slate-50">
+<div class="p-6 md:w-1/2">
+<div class="flex items-center gap-6 mb-6">
+<button class="text-sm font-bold text-slate-400 hover:text-primary transition-colors">Pending (4)</button>
+<button class="text-sm font-bold text-primary border-b-2 border-primary pb-1">Running (2)</button>
+<button class="text-sm font-bold text-slate-400 hover:text-primary transition-colors">Completed (142)</button>
+</div>
+<div class="overflow-x-auto">
+<table class="w-full text-left">
+<thead>
+<tr class="text-[10px] font-black text-slate-400 uppercase tracking-widest">
+<th class="pb-4">Job ID</th>
+<th class="pb-4">Node</th>
+<th class="pb-4">Status</th>
+<th class="pb-4">Time</th>
+<th class="pb-4"></th>
+</tr>
+</thead>
+<tbody class="text-sm">
+<tr class="group hover:bg-slate-50 transition-colors">
+<td class="py-4 font-mono font-bold text-primary">job_123_tra...</td>
+<td class="py-4 font-medium text-slate-600">Node_01</td>
+<td class="py-4">
+<span class="px-2 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-full">Processing</span>
+</td>
+<td class="py-4 text-slate-400">12:44:02</td>
+<td class="py-4 text-right">
+<button class="material-symbols-outlined text-slate-300 hover:text-red-500 transition-colors">cancel</button>
+</td>
+</tr>
+<tr class="group hover:bg-slate-50 transition-colors">
+<td class="py-4 font-mono font-bold text-primary">job_124_inf...</td>
+<td class="py-4 font-medium text-slate-600">Node_01</td>
+<td class="py-4">
+<span class="px-2 py-1 bg-primary/10 text-primary text-[10px] font-bold rounded-full">Enqueued</span>
+</td>
+<td class="py-4 text-slate-400">12:45:15</td>
+<td class="py-4 text-right">
+<button class="material-symbols-outlined text-slate-300 hover:text-red-500 transition-colors">cancel</button>
+</td>
+</tr>
+</tbody>
+</table>
+</div>
+</div>
+<!-- LIVE LOGS CONSOLE -->
+<div class="bg-slate-900 p-6 md:w-1/2 font-mono flex flex-col">
+<div class="flex items-center justify-between mb-4">
+<div class="flex gap-1.5">
+<div class="w-2.5 h-2.5 rounded-full bg-red-500"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-yellow-500"></div>
+<div class="w-2.5 h-2.5 rounded-full bg-green-500"></div>
+</div>
+<span class="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Live Streaming Console</span>
+</div>
+<div class="flex-1 text-xs space-y-2 overflow-y-auto max-h-48 text-slate-300">
+<p><span class="text-green-500">[12:44:02]</span> Initializing training pipeline...</p>
+<p><span class="text-green-500">[12:44:05]</span> CUDA initialized. GPU 0 detected (A100).</p>
+<p><span class="text-purple-400">[12:44:10]</span> Epoch 1/5: [==========&gt;] 100%</p>
+<p><span class="text-purple-400">[12:44:12]</span> Loss: 0.3221 | Accuracy: 0.8942</p>
+<p><span class="text-purple-400">[12:44:45]</span> Epoch 2/5: [===&gt;.......] 34%</p>
+<p><span class="text-purple-400">[12:45:10]</span> Loss: 0.2845 | Accuracy: 0.9122</p>
+<p class="animate-pulse">_</p>
+</div>
+</div>
+</div>
+</div>
+</section>
+</main>
+<!-- FLOATING ACTION BUTTON (Implicitly contextually required for high-tech dashboards) -->
+<button class="fixed bottom-8 right-8 w-14 h-14 bg-tertiary text-white rounded-full flex items-center justify-center shadow-2xl shadow-tertiary/40 hover:scale-110 active:scale-95 transition-all">
+<span class="material-symbols-outlined">add</span>
+</button>
+</body></html>
