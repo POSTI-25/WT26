@@ -5,6 +5,7 @@ import json
 import re
 import socket
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -376,64 +377,80 @@ def run_discover_gpus(args) -> None:
         config_path = Path.cwd() / config_path
 
     config = load_sender_config(config_path)
-    requested_subnets, subnet_source, local_ips = resolve_discovery_context(args, config)
-
     port = args.port if args.port is not None else config["target_port"]
     timeout = args.timeout if args.timeout is not None else config["scan_timeout_seconds"]
     workers = args.workers if args.workers is not None else config["scan_max_workers"]
     max_hosts = args.max_hosts if args.max_hosts is not None else config["max_scan_hosts"]
+    watch_interval = float(args.watch_interval)
+    if watch_interval <= 0:
+        raise ValueError("watch_interval must be > 0.")
 
     raw_store_file = args.store_file or config["sender_store_file"]
     store_path = resolve_output_path(raw_store_file, config_path)
 
-    scanned_subnets, reachable_receivers, gpu_nodes = scan_gpu_nodes(
-        subnets=requested_subnets,
-        port=port,
-        timeout=timeout,
-        max_workers=workers,
-        max_hosts=max_hosts,
-        local_ips=local_ips,
-        include_self=args.include_self,
-    )
+    try:
+        while True:
+            requested_subnets, subnet_source, local_ips = resolve_discovery_context(args, config)
 
-    snapshot = {
-        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "mode": "sender_discover_gpus",
-        "subnet_source": subnet_source,
-        "scanned_subnets": scanned_subnets,
-        "port": port,
-        "timeout_seconds": timeout,
-        "self_ipv4": sorted(local_ips),
-        "reachable_receiver_count": len(reachable_receivers),
-        "gpu_node_count": len(gpu_nodes),
-        "gpu_nodes": gpu_nodes,
-    }
-    write_snapshot_file(snapshot, store_path)
-
-    print(
-        "[sender] Discovery source: {source} | subnets: {subnets}".format(
-            source=subnet_source,
-            subnets=", ".join(scanned_subnets),
-        )
-    )
-    print(
-        "[sender] Reachable receivers: {reachable} | GPU nodes: {gpu_nodes}".format(
-            reachable=len(reachable_receivers),
-            gpu_nodes=len(gpu_nodes),
-        )
-    )
-    for node in gpu_nodes:
-        print(
-            "[sender] {hostname} | {ip}:{port} | gpus={count} | source={source}".format(
-                hostname=node.get("hostname") or "unknown-host",
-                ip=node.get("ip_address"),
-                port=node.get("port"),
-                count=node.get("gpu_count"),
-                source=node.get("source"),
+            scanned_subnets, reachable_receivers, gpu_nodes = scan_gpu_nodes(
+                subnets=requested_subnets,
+                port=port,
+                timeout=timeout,
+                max_workers=workers,
+                max_hosts=max_hosts,
+                local_ips=local_ips,
+                include_self=args.include_self,
             )
-        )
 
-    print(f"[sender] Stored GPU node snapshot to: {store_path}")
+            snapshot = {
+                "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+                "mode": "sender_discover_gpus",
+                "subnet_source": subnet_source,
+                "scanned_subnets": scanned_subnets,
+                "port": port,
+                "timeout_seconds": timeout,
+                "self_ipv4": sorted(local_ips),
+                "reachable_receiver_count": len(reachable_receivers),
+                "gpu_node_count": len(gpu_nodes),
+                "gpu_nodes": gpu_nodes,
+            }
+            write_snapshot_file(snapshot, store_path)
+
+            print(
+                "[sender] Discovery source: {source} | subnets: {subnets}".format(
+                    source=subnet_source,
+                    subnets=", ".join(scanned_subnets),
+                )
+            )
+            print(
+                "[sender] Reachable receivers: {reachable} | GPU nodes: {gpu_nodes}".format(
+                    reachable=len(reachable_receivers),
+                    gpu_nodes=len(gpu_nodes),
+                )
+            )
+            for node in gpu_nodes:
+                print(
+                    "[sender] {hostname} | {ip}:{port} | gpus={count} | source={source}".format(
+                        hostname=node.get("hostname") or "unknown-host",
+                        ip=node.get("ip_address"),
+                        port=node.get("port"),
+                        count=node.get("gpu_count"),
+                        source=node.get("source"),
+                    )
+                )
+
+            print(f"[sender] Stored GPU node snapshot to: {store_path}")
+
+            if not args.watch:
+                break
+
+            print(f"[sender] Watching for updates; next scan in {watch_interval:.1f}s...")
+            time.sleep(watch_interval)
+    except KeyboardInterrupt:
+        if args.watch:
+            print("\n[sender] Stopped continuous GPU discovery.")
+        else:
+            raise
 
 
 def send_file_to_receiver(
@@ -787,6 +804,17 @@ def main() -> None:
         type=float,
         default=30.0,
         help="Per-target file send timeout in seconds for --send-all (default: 30.0).",
+    )
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="With --discover-gpus, continuously refresh and rewrite snapshot JSON.",
+    )
+    parser.add_argument(
+        "--watch-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between scans when --watch is enabled (default: 2.0).",
     )
     args = parser.parse_args()
 
