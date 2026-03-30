@@ -2,7 +2,9 @@ import argparse
 import concurrent.futures
 import ipaddress
 import json
+import re
 import socket
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +49,7 @@ def load_cli_config(config_path: Path) -> dict[str, Any]:
         scan_max_workers = int(raw.get("scan_max_workers", 64))
         max_scan_hosts = int(raw.get("max_scan_hosts", 512))
         scan_store_file = str(raw.get("scan_store_file", "../data/gpu/network_gpu_store.json"))
+        ping_store_file = str(raw.get("ping_store_file", "../data/gpu/ping_gpu_snapshot.json"))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Config contains invalid value types: {exc}") from exc
 
@@ -70,6 +73,7 @@ def load_cli_config(config_path: Path) -> dict[str, Any]:
         "scan_max_workers": scan_max_workers,
         "max_scan_hosts": max_scan_hosts,
         "scan_store_file": scan_store_file,
+        "ping_store_file": ping_store_file,
     }
 
 
@@ -78,6 +82,151 @@ def resolve_output_path(raw_path: str, config_path: Path) -> Path:
     if output.is_absolute():
         return output
     return config_path.parent / output
+
+
+def split_subnet_values(raw_value: str | None) -> list[str]:
+    if raw_value is None:
+        return []
+    return [part.strip() for part in str(raw_value).split(",") if part.strip()]
+
+
+def normalize_subnet(raw_subnet: str) -> str:
+    try:
+        network = ipaddress.ip_network(raw_subnet.strip(), strict=False)
+    except ValueError as exc:
+        raise ConfigError(f"Invalid subnet value: {raw_subnet}") from exc
+
+    if not isinstance(network, ipaddress.IPv4Network):
+        raise ConfigError(f"Only IPv4 subnet scanning is supported: {raw_subnet}")
+
+    return str(network)
+
+
+def narrow_auto_scan_network(
+    address: ipaddress.IPv4Address,
+    network: ipaddress.IPv4Network,
+) -> ipaddress.IPv4Network:
+    if network.prefixlen < 24:
+        return ipaddress.IPv4Network(f"{address}/24", strict=False)
+    return network
+
+
+def build_private_network_from_ip_and_mask(ip_text: str, mask_text: str) -> str | None:
+    try:
+        address = ipaddress.IPv4Address(ip_text)
+        interface = ipaddress.IPv4Interface(f"{ip_text}/{mask_text}")
+    except ValueError:
+        return None
+
+    if not address.is_private or address.is_loopback or address.is_link_local:
+        return None
+
+    return str(narrow_auto_scan_network(address, interface.network))
+
+
+def discover_windows_private_subnets() -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["ipconfig"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return []
+
+    subnets: list[str] = []
+    current_ip = None
+    current_mask = None
+
+    for raw_line in proc.stdout.splitlines():
+        line = raw_line.strip()
+
+        ip_match = re.search(r"IPv4[^:]*:\s*([0-9.]+)", line)
+        if ip_match:
+            current_ip = ip_match.group(1)
+
+        mask_match = re.search(r"Subnet Mask[^:]*:\s*([0-9.]+)", line)
+        if mask_match:
+            current_mask = mask_match.group(1)
+
+        if current_ip and current_mask:
+            subnet = build_private_network_from_ip_and_mask(current_ip, current_mask)
+            if subnet is not None:
+                subnets.append(subnet)
+            current_ip = None
+            current_mask = None
+
+    return subnets
+
+
+def discover_posix_private_subnets() -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["ip", "-o", "-f", "inet", "addr", "show"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (FileNotFoundError, OSError, subprocess.CalledProcessError):
+        return []
+
+    subnets: list[str] = []
+    for raw_line in proc.stdout.splitlines():
+        match = re.search(r"\binet\s+([0-9.]+)/(\d+)\b", raw_line)
+        if not match:
+            continue
+
+        ip_text, prefix_length = match.groups()
+        try:
+            address = ipaddress.IPv4Address(ip_text)
+            interface = ipaddress.IPv4Interface(f"{ip_text}/{prefix_length}")
+        except ValueError:
+            continue
+
+        if not address.is_private or address.is_loopback or address.is_link_local:
+            continue
+
+        subnets.append(str(narrow_auto_scan_network(address, interface.network)))
+
+    return subnets
+
+
+def discover_fallback_private_subnets() -> list[str]:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(("8.8.8.8", 80))
+            local_ip = str(probe.getsockname()[0])
+    except OSError:
+        return []
+
+    try:
+        address = ipaddress.IPv4Address(local_ip)
+    except ValueError:
+        return []
+
+    if not address.is_private or address.is_loopback or address.is_link_local:
+        return []
+
+    return [str(narrow_auto_scan_network(address, ipaddress.IPv4Network(f"{local_ip}/24", strict=False)))]
+
+
+def discover_local_private_subnets() -> list[str]:
+    subnets: list[str] = []
+    seen: set[str] = set()
+
+    for subnet in (
+        discover_windows_private_subnets()
+        + discover_posix_private_subnets()
+        + discover_fallback_private_subnets()
+    ):
+        normalized = normalize_subnet(subnet)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        subnets.append(normalized)
+
+    return subnets
 
 
 def send_json_request(host: str, port: int, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -118,13 +267,22 @@ def probe_receiver(host: str, port: int, timeout: float) -> dict[str, Any] | Non
                 "usage_percent": gpu.get("utilization_gpu_percent"),
                 "memory_used_mb": gpu.get("memory_used_mb"),
                 "memory_total_mb": gpu.get("memory_total_mb"),
+                "cuda_cores": gpu.get("cuda_cores"),
+                "compute_capability": gpu.get("compute_capability"),
             }
         )
 
     return {
-        "host": host,
+        "ip_address": (
+            gpu_reply.get("socket_receiver_ip")
+            or ping_reply.get("receiver_ip")
+            or host
+        ),
+        "requested_host": host,
         "port": port,
         "ok": bool(gpu_reply.get("ok", False)),
+        "service": ping_reply.get("service", "unknown"),
+        "hostname": gpu_reply.get("hostname") or ping_reply.get("hostname"),
         "source": gpu_reply.get("source", "unknown"),
         "gpu_count": int(gpu_reply.get("gpu_count", 0)),
         "gpu_cards": gpu_cards,
@@ -135,32 +293,89 @@ def probe_receiver(host: str, port: int, timeout: float) -> dict[str, Any] | Non
 
 def list_hosts_in_subnet(subnet: str) -> list[str]:
     network = ipaddress.ip_network(subnet, strict=False)
+    if not isinstance(network, ipaddress.IPv4Network):
+        raise ConfigError(f"Only IPv4 subnet scanning is supported: {subnet}")
     return [str(host) for host in network.hosts()]
 
 
 def scan_receivers(
-    subnet: str,
+    subnets: list[str],
     port: int,
     timeout: float,
     max_workers: int,
     max_hosts: int,
-) -> list[dict[str, Any]]:
-    hosts = list_hosts_in_subnet(subnet)
+) -> tuple[list[str], list[dict[str, Any]]]:
+    normalized_subnets: list[str] = []
+    hosts: list[str] = []
+    seen_hosts: set[str] = set()
+
+    for raw_subnet in subnets:
+        subnet = normalize_subnet(raw_subnet)
+        if subnet not in normalized_subnets:
+            normalized_subnets.append(subnet)
+        for host in list_hosts_in_subnet(subnet):
+            if host in seen_hosts:
+                continue
+            seen_hosts.add(host)
+            hosts.append(host)
+
     if len(hosts) > max_hosts:
         raise ConfigError(
-            f"Subnet {subnet} contains {len(hosts)} hosts, which exceeds max_scan_hosts={max_hosts}."
+            "Requested scan covers "
+            f"{len(hosts)} hosts across {', '.join(normalized_subnets)}, "
+            f"which exceeds max_scan_hosts={max_hosts}."
         )
 
     results: list[dict[str, Any]] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+    worker_count = min(max_workers, max(1, len(hosts)))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
         futures = [executor.submit(probe_receiver, host, port, timeout) for host in hosts]
         for future in concurrent.futures.as_completed(futures):
             result = future.result()
             if result is not None:
                 results.append(result)
 
-    results.sort(key=lambda item: ipaddress.ip_address(item["host"]))
-    return results
+    results.sort(key=lambda item: ipaddress.ip_address(item["ip_address"]))
+    return normalized_subnets, results
+
+
+def build_snapshot_payload(
+    mode: str,
+    scanned_subnets: list[str],
+    port: int,
+    timeout: float,
+    receivers: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "scanned_subnets": scanned_subnets,
+        "port": port,
+        "timeout_seconds": timeout,
+        "receiver_count": len(receivers),
+        "receivers": receivers,
+    }
+
+
+def write_snapshot_file(snapshot: dict[str, Any], store_path: Path) -> None:
+    store_path.parent.mkdir(parents=True, exist_ok=True)
+    store_path.write_text(json.dumps(snapshot, indent=2), encoding="utf-8")
+
+
+def determine_ping_subnets(args, config) -> tuple[list[str], str]:
+    requested_subnets = split_subnet_values(args.subnet)
+    if requested_subnets:
+        return requested_subnets, "argument"
+
+    discovered_subnets = discover_local_private_subnets()
+    if discovered_subnets:
+        return discovered_subnets, "auto-discovered local adapters"
+
+    fallback_subnets = split_subnet_values(config["discovery_subnet"])
+    if fallback_subnets:
+        return fallback_subnets, "config fallback"
+
+    raise ConfigError("No subnet available for ping scan.")
 
 
 def run_connect(args, config):
@@ -186,7 +401,9 @@ def run_connect(args, config):
 
 
 def run_scan(args, config, config_path: Path):
-    subnet = args.subnet or config["discovery_subnet"]
+    requested_subnets = split_subnet_values(args.subnet) or split_subnet_values(
+        config["discovery_subnet"]
+    )
     port = args.port if args.port is not None else config["target_port"]
     timeout = args.timeout if args.timeout is not None else config["scan_timeout_seconds"]
     workers = args.workers if args.workers is not None else config["scan_max_workers"]
@@ -194,29 +411,23 @@ def run_scan(args, config, config_path: Path):
     raw_store_file = args.store_file or config["scan_store_file"]
     store_path = resolve_output_path(raw_store_file, config_path)
 
-    receivers = scan_receivers(
-        subnet=subnet,
+    scanned_subnets, receivers = scan_receivers(
+        subnets=requested_subnets,
         port=port,
         timeout=timeout,
         max_workers=workers,
         max_hosts=config["max_scan_hosts"],
     )
 
-    store = {
-        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "subnet": subnet,
-        "port": port,
-        "receiver_count": len(receivers),
-        "receivers": receivers,
-    }
-    store_path.parent.mkdir(parents=True, exist_ok=True)
-    store_path.write_text(json.dumps(store, indent=2), encoding="utf-8")
+    store = build_snapshot_payload("scan", scanned_subnets, port, timeout, receivers)
+    write_snapshot_file(store, store_path)
 
     print(f"[cli] Receivers found: {len(receivers)}")
     for item in receivers:
         print(
-            "[cli] {host}:{port} | gpus={count} | source={source} | ok={ok}".format(
-                host=item.get("host"),
+            "[cli] {hostname} | {ip}:{port} | gpus={count} | source={source} | ok={ok}".format(
+                hostname=item.get("hostname") or "unknown-host",
+                ip=item.get("ip_address"),
                 port=item.get("port"),
                 count=item.get("gpu_count"),
                 source=item.get("source"),
@@ -225,6 +436,49 @@ def run_scan(args, config, config_path: Path):
         )
 
     print(f"[cli] Stored network GPU details to: {store_path}")
+
+
+def run_ping(args, config, config_path: Path):
+    requested_subnets, subnet_source = determine_ping_subnets(args, config)
+    port = args.port if args.port is not None else config["target_port"]
+    timeout = args.timeout if args.timeout is not None else config["scan_timeout_seconds"]
+    workers = args.workers if args.workers is not None else config["scan_max_workers"]
+
+    # Ping command stores a temporary/reusable snapshot by default.
+    raw_store_file = args.store_file or config["ping_store_file"]
+    store_path = resolve_output_path(raw_store_file, config_path)
+
+    scanned_subnets, receivers = scan_receivers(
+        subnets=requested_subnets,
+        port=port,
+        timeout=timeout,
+        max_workers=workers,
+        max_hosts=config["max_scan_hosts"],
+    )
+
+    store = build_snapshot_payload("ping", scanned_subnets, port, timeout, receivers)
+    write_snapshot_file(store, store_path)
+
+    print(
+        "[cli] Ping subnet source: {source} | subnets: {subnets}".format(
+            source=subnet_source,
+            subnets=", ".join(scanned_subnets),
+        )
+    )
+    print(f"[cli] Pinged reachable hosts; receivers found: {len(receivers)}")
+    for item in receivers:
+        print(
+            "[cli] {hostname} | {ip}:{port} | gpus={count} | source={source} | ok={ok}".format(
+                hostname=item.get("hostname") or "unknown-host",
+                ip=item.get("ip_address"),
+                port=item.get("port"),
+                count=item.get("gpu_count"),
+                source=item.get("source"),
+                ok=item.get("ok"),
+            )
+        )
+
+    print(f"[cli] Stored temporary ping GPU snapshot to: {store_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -266,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     scan_parser.add_argument(
         "--subnet",
         default=None,
-        help="CIDR subnet to scan (example: 192.168.1.0/24).",
+        help="CIDR subnet to scan, or comma-separated subnets (example: 192.168.1.0/24).",
     )
     scan_parser.add_argument(
         "--port",
@@ -292,6 +546,42 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override output JSON file path for scan results.",
     )
 
+    ping_parser = subparsers.add_parser(
+        "ping",
+        help="Ping hotspot subnet, collect GPU info from reachable receivers, and store snapshot JSON.",
+    )
+    ping_parser.add_argument(
+        "--subnet",
+        default=None,
+        help=(
+            "Optional CIDR subnet, or comma-separated subnets, to ping. "
+            "If omitted, local private subnets are auto-discovered."
+        ),
+    )
+    ping_parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Override receiver port from config.",
+    )
+    ping_parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="Per-host ping/GPU request timeout in seconds.",
+    )
+    ping_parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Worker thread count for parallel subnet probing.",
+    )
+    ping_parser.add_argument(
+        "--store-file",
+        default=None,
+        help="Override output JSON path for temporary ping snapshot.",
+    )
+
     return parser
 
 
@@ -309,6 +599,8 @@ def main() -> None:
         run_connect(args, config)
     elif args.command == "scan":
         run_scan(args, config, config_path)
+    elif args.command == "ping":
+        run_ping(args, config, config_path)
 
 
 if __name__ == "__main__":

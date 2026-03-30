@@ -1,39 +1,10 @@
 __pycache__/
 *.pyc
-incoming
-# Environments
-.venv/
-venv/
-ENV/
-env/
-python/
-
-# Python bytecode & cache
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Distribution / packaging
-dist/
-build/
-eggs/
-*.egg-info/
-
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.coverage
-.cache
-nosetests.xml
-coverage.xml
-
-# IDE specific (VS Code, PyCharm)
-.vscode/
-.idea/
-
-# OS specific
-.DS_Store
-Thumbs.db
-
-# Environment variables (Sensitive info!)
-.env
+incoming/
+apps/receiver/data/
+data/gpu/ping_gpu_snapshot.json
+data/gpu/network_gpu_store.json
+data/gpu/sender_gpu_nodes_snapshot.json
+*.json
+!config/cli_config.json
+!.vscode/c_cpp_properties.json

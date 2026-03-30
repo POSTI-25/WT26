@@ -1,10 +1,10 @@
 {
-  "target_host": "127.0.0.1",
   "target_port": 50051,
   "discovery_subnet": "192.168.1.0/24",
   "connect_timeout_seconds": 3.0,
   "scan_timeout_seconds": 0.35,
   "scan_max_workers": 64,
   "max_scan_hosts": 512,
-  "scan_store_file": "../data/gpu/network_gpu_store.json"
+  "scan_store_file": "../data/gpu/network_gpu_store.json",
+  "ping_store_file": "../data/gpu/ping_gpu_snapshot.json"
 }

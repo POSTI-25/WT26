@@ -1,3 +1,5 @@
+# External Python dependencies used by this project.
+# Imported in code as: pynvml
 torch>=2.2.0
 numpy>=1.26.0
 pandas>=2.1.0

@@ -3,23 +3,34 @@
   "configurations": [
     {
       "name": "Windows CUDA",
-      "intelliSenseMode": "windows-msvc-x64",
+      "intelliSenseMode": "windows-gcc-x64",
+      "compilerPath": "C:/msys64/ucrt64/bin/g++.exe",
       "cStandard": "c17",
-      "cppStandard": "c++17",
+      "cppStandard": "c++20",
       "defines": [
-        "__CUDACC__"
+        "__CUDACC__",
+        "__NVCC__",
+        "_MSC_VER=1940",
+        "_MSVC_LANG=202002L"
       ],
       "includePath": [
         "${workspaceFolder}/**",
         "${env:CUDA_PATH}/include",
-        "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/include",
-        "C:/Program Files (x86)/Windows Kits/10/Include/**"
+        "C:/msys64/ucrt64/include",
+        "C:/msys64/ucrt64/include/c++/13.2.0",
+        "C:/msys64/ucrt64/include/c++/13.2.0/x86_64-w64-mingw32",
+        "C:/msys64/ucrt64/include/c++/13.2.0/backward",
+        "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/13.2.0/include"
       ],
       "browse": {
         "path": [
           "${workspaceFolder}",
           "${env:CUDA_PATH}/include",
-          "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v13.2/include"
+          "C:/msys64/ucrt64/include",
+          "C:/msys64/ucrt64/include/c++/13.2.0",
+          "C:/msys64/ucrt64/include/c++/13.2.0/x86_64-w64-mingw32",
+          "C:/msys64/ucrt64/include/c++/13.2.0/backward",
+          "C:/msys64/ucrt64/lib/gcc/x86_64-w64-mingw32/13.2.0/include"
         ],
         "limitSymbolsToIncludedHeaders": true
       }
