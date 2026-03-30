@@ -5,4 +5,4 @@ apps/receiver/data/
 data/gpu/ping_gpu_snapshot.json
 data/gpu/network_gpu_store.json
 data/gpu/sender_gpu_nodes_snapshot.json
-*.json
+
