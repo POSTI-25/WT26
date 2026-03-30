@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import json
 import os
@@ -7,6 +9,25 @@ from typing import Any
 import torch
 import torch.distributed.rpc as rpc
 import torch.nn as nn
+
+
+RPC_REQUIRED_SYMBOLS = ("init_rpc", "shutdown", "remote")
+
+
+def rpc_is_available() -> bool:
+    return all(hasattr(rpc, symbol) for symbol in RPC_REQUIRED_SYMBOLS)
+
+
+def ensure_rpc_available() -> None:
+    if rpc_is_available():
+        return
+
+    raise RuntimeError(
+        "PyTorch RPC APIs are not available in this environment. "
+        f"Installed torch version: {torch.__version__}. "
+        "Use split-only test via `python -m cnnSplit.test_train_split --gpu-json <path>` "
+        "or install a PyTorch build that includes torch.distributed.rpc support."
+    )
 
 
 def load_gpu_json(gpu_json: dict[str, Any] | str | Path) -> dict[str, Any]:
@@ -158,6 +179,8 @@ def deploy_model_chunks_rpc(
     assignment: dict[str, dict[str, Any]],
     worker_devices: dict[str, str] | None = None,
 ) -> dict[str, rpc.RRef]:
+    ensure_rpc_available()
+
     worker_devices = worker_devices or {}
     remote_chunks: dict[str, rpc.RRef] = {}
 
@@ -196,18 +219,28 @@ def init_rpc_framework(
     master_addr: str = "127.0.0.1",
     master_port: int = 29501,
 ) -> None:
+    ensure_rpc_available()
+
     os.environ.setdefault("MASTER_ADDR", master_addr)
     os.environ.setdefault("MASTER_PORT", str(master_port))
 
-    options = rpc.TensorPipeRpcBackendOptions(
-        num_worker_threads=16,
-        rpc_timeout=300,
-    )
+    if hasattr(rpc, "TensorPipeRpcBackendOptions"):
+        options = rpc.TensorPipeRpcBackendOptions(
+            num_worker_threads=16,
+            rpc_timeout=300,
+        )
+        rpc.init_rpc(
+            name=name,
+            rank=rank,
+            world_size=world_size,
+            rpc_backend_options=options,
+        )
+        return
+
     rpc.init_rpc(
         name=name,
         rank=rank,
         world_size=world_size,
-        rpc_backend_options=options,
     )
 
 
