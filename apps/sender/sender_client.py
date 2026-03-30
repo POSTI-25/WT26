@@ -1,3 +1,4 @@
+import asyncio
 import argparse
 import concurrent.futures
 import ipaddress
@@ -5,13 +6,417 @@ import json
 import re
 import socket
 import subprocess
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = SCRIPT_DIR.parent.parent / "config" / "cli_config.json"
+
+
+class ProgramState(str, Enum):
+    QUEUED = "QUEUED"
+    RUNNING = "RUNNING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+
+@dataclass
+class SchedulerJob:
+    job_id: str
+    required_vram_mb: int
+    checkpoints: list[dict[str, Any]]
+    state: ProgramState = ProgramState.QUEUED
+    checkpoint_index: int = -1
+    assigned_worker: str | None = None
+    last_error: str | None = None
+
+    def next_checkpoint(self) -> dict[str, Any] | None:
+        next_index = self.checkpoint_index + 1
+        if next_index >= len(self.checkpoints):
+            return None
+        return self.checkpoints[next_index]
+
+    def checkpoint_vram_requirement(self) -> int:
+        next_checkpoint = self.next_checkpoint()
+        if next_checkpoint is None:
+            return 0
+        return int(next_checkpoint.get("required_vram_mb", self.required_vram_mb))
+
+
+@dataclass
+class SchedulerWorker:
+    host: str
+    port: int
+    free_vram_mb: int = 0
+    total_vram_mb: int = 0
+    state: ProgramState = ProgramState.FAILED
+    active_job_ids: list[str] = field(default_factory=list)
+
+    @property
+    def worker_id(self) -> str:
+        return f"{self.host}:{self.port}"
+
+
+class FaultTolerantGpuScheduler:
+    def __init__(
+        self,
+        jobs: list[SchedulerJob],
+        workers: list[SchedulerWorker],
+        state_file: Path,
+        worker_timeout_seconds: float,
+        scheduler_interval_seconds: float,
+    ) -> None:
+        self.jobs = {job.job_id: job for job in jobs}
+        self.known_workers = {worker.worker_id: worker for worker in workers}
+        self.active_gpus: list[SchedulerWorker] = []
+        self.state_file = state_file
+        self.worker_timeout_seconds = worker_timeout_seconds
+        self.scheduler_interval_seconds = scheduler_interval_seconds
+        self.program_state = ProgramState.QUEUED
+        self.no_worker_cycles = 0
+
+    async def workers(self) -> None:
+        probes = [
+            asyncio.to_thread(
+                probe_gpu_node,
+                worker.host,
+                worker.port,
+                self.worker_timeout_seconds,
+            )
+            for worker in self.known_workers.values()
+        ]
+
+        probe_results = await asyncio.gather(*probes, return_exceptions=True)
+        reachable_workers: list[SchedulerWorker] = []
+
+        for worker, probe_result in zip(self.known_workers.values(), probe_results):
+            was_failed = worker.state == ProgramState.FAILED
+
+            if isinstance(probe_result, Exception) or probe_result is None:
+                worker.state = ProgramState.FAILED
+                worker.free_vram_mb = 0
+                worker.total_vram_mb = 0
+                if not was_failed:
+                    self.rollback_jobs_for_failed_worker(worker.worker_id)
+                continue
+
+            total_vram_mb = 0
+            free_vram_mb = 0
+            for gpu in probe_result.get("gpu_cards", []):
+                total = int(gpu.get("memory_total_mb") or 0)
+                used = int(gpu.get("memory_used_mb") or 0)
+                total_vram_mb += total
+                free_vram_mb += max(0, total - used)
+
+            worker.total_vram_mb = total_vram_mb
+            worker.free_vram_mb = free_vram_mb
+            worker.state = ProgramState.RUNNING if worker.active_job_ids else ProgramState.COMPLETED
+            reachable_workers.append(worker)
+
+        self.active_gpus = [worker for worker in reachable_workers if worker.state != ProgramState.FAILED]
+        self.persist_state()
+
+    async def eval_queue(self) -> None:
+        queued_jobs = [
+            job
+            for job in self.jobs.values()
+            if job.state in {ProgramState.QUEUED, ProgramState.FAILED}
+        ]
+
+        for job in queued_jobs:
+            required_vram_mb = job.checkpoint_vram_requirement()
+            if required_vram_mb <= 0 and job.next_checkpoint() is None:
+                job.state = ProgramState.COMPLETED
+                continue
+
+            selected_worker = self.select_worker_for_job(required_vram_mb)
+            if selected_worker is None:
+                continue
+
+            await self.run_job_from_last_checkpoint(job, selected_worker)
+
+        self.recompute_program_state()
+        self.persist_state()
+
+    def select_worker_for_job(self, required_vram_mb: int) -> SchedulerWorker | None:
+        candidates = [
+            worker
+            for worker in self.active_gpus
+            if worker.state in {ProgramState.RUNNING, ProgramState.COMPLETED}
+            and worker.free_vram_mb >= required_vram_mb
+        ]
+        if not candidates:
+            return None
+        candidates.sort(key=lambda worker: worker.free_vram_mb, reverse=True)
+        return candidates[0]
+
+    async def run_job_from_last_checkpoint(
+        self,
+        job: SchedulerJob,
+        worker: SchedulerWorker,
+    ) -> None:
+        reserve_vram_mb = max(job.required_vram_mb, job.checkpoint_vram_requirement())
+        worker.free_vram_mb = max(0, worker.free_vram_mb - reserve_vram_mb)
+        worker.active_job_ids.append(job.job_id)
+        worker.state = ProgramState.RUNNING
+        job.state = ProgramState.RUNNING
+        job.assigned_worker = worker.worker_id
+        job.last_error = None
+
+        try:
+            while True:
+                checkpoint = job.next_checkpoint()
+                if checkpoint is None:
+                    job.state = ProgramState.COMPLETED
+                    break
+
+                latest_worker = self.known_workers.get(worker.worker_id)
+                if latest_worker is None or latest_worker.state == ProgramState.FAILED:
+                    raise RuntimeError(f"Assigned worker {worker.worker_id} is offline.")
+
+                await asyncio.sleep(0.05)
+                job.checkpoint_index += 1
+
+        except Exception as exc:
+            self.rollback_job(job, str(exc))
+        finally:
+            worker.free_vram_mb += reserve_vram_mb
+            worker.active_job_ids = [item for item in worker.active_job_ids if item != job.job_id]
+            if worker.state != ProgramState.FAILED:
+                worker.state = ProgramState.COMPLETED if not worker.active_job_ids else ProgramState.RUNNING
+
+    def rollback_job(self, job: SchedulerJob, reason: str) -> None:
+        job.state = ProgramState.QUEUED
+        job.assigned_worker = None
+        job.last_error = reason
+
+    def rollback_jobs_for_failed_worker(self, worker_id: str) -> None:
+        for job in self.jobs.values():
+            if job.assigned_worker == worker_id and job.state == ProgramState.RUNNING:
+                self.rollback_job(job, f"Worker {worker_id} failed. Rolled back to checkpoint index {job.checkpoint_index}.")
+
+    def recompute_program_state(self) -> None:
+        if any(job.state == ProgramState.RUNNING for job in self.jobs.values()):
+            self.program_state = ProgramState.RUNNING
+            self.no_worker_cycles = 0
+            return
+
+        if all(job.state == ProgramState.COMPLETED for job in self.jobs.values()):
+            self.program_state = ProgramState.COMPLETED
+            self.no_worker_cycles = 0
+            return
+
+        if self.active_gpus:
+            self.program_state = ProgramState.QUEUED
+            self.no_worker_cycles = 0
+            return
+
+        self.no_worker_cycles += 1
+        if self.no_worker_cycles >= 3:
+            self.program_state = ProgramState.FAILED
+        else:
+            self.program_state = ProgramState.QUEUED
+
+    def persist_state(self) -> None:
+        payload = {
+            "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+            "program_state": self.program_state.value,
+            "active_gpu_count": len(self.active_gpus),
+            "workers": [
+                {
+                    "worker_id": worker.worker_id,
+                    "host": worker.host,
+                    "port": worker.port,
+                    "state": worker.state.value,
+                    "free_vram_mb": worker.free_vram_mb,
+                    "total_vram_mb": worker.total_vram_mb,
+                    "active_job_ids": worker.active_job_ids,
+                }
+                for worker in self.known_workers.values()
+            ],
+            "jobs": [
+                {
+                    "job_id": job.job_id,
+                    "state": job.state.value,
+                    "required_vram_mb": job.required_vram_mb,
+                    "checkpoint_index": job.checkpoint_index,
+                    "checkpoint_count": len(job.checkpoints),
+                    "last_completed_checkpoint": (
+                        job.checkpoints[job.checkpoint_index].get("name")
+                        if job.checkpoint_index >= 0 and job.checkpoint_index < len(job.checkpoints)
+                        else None
+                    ),
+                    "next_checkpoint": (
+                        job.next_checkpoint().get("name") if job.next_checkpoint() else None
+                    ),
+                    "assigned_worker": job.assigned_worker,
+                    "last_error": job.last_error,
+                }
+                for job in self.jobs.values()
+            ],
+        }
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    async def run(self, max_cycles: int = 0) -> ProgramState:
+        cycle = 0
+        while True:
+            cycle += 1
+            await self.workers()
+            await self.eval_queue()
+
+            if self.program_state in {ProgramState.COMPLETED, ProgramState.FAILED}:
+                return self.program_state
+
+            if max_cycles > 0 and cycle >= max_cycles:
+                return self.program_state
+
+            await asyncio.sleep(self.scheduler_interval_seconds)
+
+
+def parse_scheduler_jobs(raw_jobs: Any) -> list[SchedulerJob]:
+    if isinstance(raw_jobs, dict):
+        raw_jobs = raw_jobs.get("jobs", [])
+
+    if not isinstance(raw_jobs, list):
+        raise ValueError("Scheduler jobs file must be a JSON list or an object with a 'jobs' list.")
+
+    jobs: list[SchedulerJob] = []
+    for index, item in enumerate(raw_jobs):
+        if not isinstance(item, dict):
+            raise ValueError(f"Invalid job entry at index {index}: expected object.")
+
+        job_id = str(item.get("job_id") or f"job-{index + 1}")
+        required_vram_mb = int(item.get("required_vram_mb", 0))
+        checkpoints = item.get("checkpoints") or []
+
+        if not isinstance(checkpoints, list) or not checkpoints:
+            raise ValueError(f"Job '{job_id}' requires a non-empty checkpoints list.")
+
+        normalized_checkpoints: list[dict[str, Any]] = []
+        for cp_index, checkpoint in enumerate(checkpoints):
+            if isinstance(checkpoint, str):
+                normalized_checkpoints.append(
+                    {
+                        "name": checkpoint,
+                        "required_vram_mb": required_vram_mb,
+                    }
+                )
+                continue
+            if not isinstance(checkpoint, dict):
+                raise ValueError(
+                    f"Job '{job_id}' checkpoint at index {cp_index} must be a string or object."
+                )
+            normalized_checkpoints.append(
+                {
+                    "name": str(checkpoint.get("name") or f"checkpoint-{cp_index + 1}"),
+                    "required_vram_mb": int(
+                        checkpoint.get("required_vram_mb", required_vram_mb)
+                    ),
+                }
+            )
+
+        if required_vram_mb <= 0:
+            required_vram_mb = max(
+                int(cp.get("required_vram_mb", 0)) for cp in normalized_checkpoints
+            )
+
+        jobs.append(
+            SchedulerJob(
+                job_id=job_id,
+                required_vram_mb=required_vram_mb,
+                checkpoints=normalized_checkpoints,
+            )
+        )
+
+    return jobs
+
+
+def load_scheduler_jobs(jobs_file: Path) -> list[SchedulerJob]:
+    try:
+        raw = json.loads(jobs_file.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"Scheduler jobs file not found: {jobs_file}") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON in scheduler jobs file {jobs_file}: {exc}") from exc
+
+    jobs = parse_scheduler_jobs(raw)
+    if not jobs:
+        raise ValueError("Scheduler jobs file contains no jobs.")
+    return jobs
+
+
+def build_scheduler_workers(receivers: list[dict[str, Any]]) -> list[SchedulerWorker]:
+    workers: list[SchedulerWorker] = []
+    for receiver in receivers:
+        host = str(receiver.get("ip_address") or receiver.get("requested_host") or "").strip()
+        if not host:
+            continue
+        workers.append(
+            SchedulerWorker(
+                host=host,
+                port=int(receiver.get("port") or 50051),
+            )
+        )
+    return workers
+
+
+def run_scheduler(args) -> None:
+    config_path = Path(args.config).expanduser()
+    if not config_path.is_absolute():
+        config_path = Path.cwd() / config_path
+
+    config = load_sender_config(config_path)
+    requested_subnets, _, local_ips = resolve_discovery_context(args, config)
+
+    port = args.port if args.port is not None else config["target_port"]
+    timeout = args.timeout if args.timeout is not None else config["scan_timeout_seconds"]
+    workers = args.workers if args.workers is not None else config["scan_max_workers"]
+    max_hosts = args.max_hosts if args.max_hosts is not None else config["max_scan_hosts"]
+
+    _, reachable_receivers, _ = scan_gpu_nodes(
+        subnets=requested_subnets,
+        port=port,
+        timeout=timeout,
+        max_workers=workers,
+        max_hosts=max_hosts,
+        local_ips=local_ips,
+        include_self=args.include_self,
+    )
+
+    scheduler_workers = build_scheduler_workers(reachable_receivers)
+    if not scheduler_workers:
+        raise RuntimeError("No known workers discovered. Cannot start scheduler.")
+
+    jobs_file = Path(args.jobs_file).expanduser()
+    if not jobs_file.is_absolute():
+        jobs_file = Path.cwd() / jobs_file
+    jobs = load_scheduler_jobs(jobs_file)
+
+    state_file = Path(args.scheduler_state_file).expanduser()
+    if not state_file.is_absolute():
+        state_file = Path.cwd() / state_file
+
+    scheduler = FaultTolerantGpuScheduler(
+        jobs=jobs,
+        workers=scheduler_workers,
+        state_file=state_file,
+        worker_timeout_seconds=timeout,
+        scheduler_interval_seconds=max(0.2, float(args.scheduler_interval)),
+    )
+    final_state = asyncio.run(scheduler.run(max_cycles=max(0, int(args.scheduler_cycles))))
+
+    print(
+        "[sender] Scheduler finished | state={state} | jobs={count} | state_file={path}".format(
+            state=final_state.value,
+            count=len(jobs),
+            path=state_file,
+        )
+    )
 
 
 def receive_line(reader) -> str:
@@ -729,6 +1134,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--schedule-jobs",
+        action="store_true",
+        help=(
+            "Run fault-tolerant GPU scheduler: monitor workers, rollback failed worker jobs "
+            "to last checkpoint, and resume queued work on free VRAM."
+        ),
+    )
+    parser.add_argument(
         "--file",
         default="",
         help="File path used by --send-all mode.",
@@ -788,12 +1201,40 @@ def main() -> None:
         default=30.0,
         help="Per-target file send timeout in seconds for --send-all (default: 30.0).",
     )
+    parser.add_argument(
+        "--jobs-file",
+        default="data/gpu/jobs_queue.json",
+        help="JSON file containing scheduler jobs and checkpoints.",
+    )
+    parser.add_argument(
+        "--scheduler-state-file",
+        default="data/gpu/scheduler_state.json",
+        help="Output JSON file where scheduler state is persisted.",
+    )
+    parser.add_argument(
+        "--scheduler-interval",
+        type=float,
+        default=1.0,
+        help="Scheduler loop interval in seconds (default: 1.0).",
+    )
+    parser.add_argument(
+        "--scheduler-cycles",
+        type=int,
+        default=0,
+        help="Optional max scheduler cycles (0 runs until COMPLETED/FAILED).",
+    )
     args = parser.parse_args()
 
     if args.send_all and args.discover_gpus:
         parser.error("--send-all cannot be combined with --discover-gpus.")
     if args.send_all and args.gpu_info:
         parser.error("--send-all cannot be combined with --gpu-info.")
+    if args.schedule_jobs and args.discover_gpus:
+        parser.error("--schedule-jobs cannot be combined with --discover-gpus.")
+    if args.schedule_jobs and args.send_all:
+        parser.error("--schedule-jobs cannot be combined with --send-all.")
+    if args.schedule_jobs and args.gpu_info:
+        parser.error("--schedule-jobs cannot be combined with --gpu-info.")
 
     if args.discover_gpus:
         run_discover_gpus(args)
@@ -801,6 +1242,10 @@ def main() -> None:
 
     if args.send_all:
         run_send_all(args)
+        return
+
+    if args.schedule_jobs:
+        run_scheduler(args)
         return
 
     if not args.receiver_host:
