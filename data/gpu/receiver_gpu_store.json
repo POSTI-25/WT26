@@ -1,12 +1,12 @@
 {
-  "updated_at_utc": "2026-03-30T12:32:17.256359+00:00",
+  "updated_at_utc": "2026-03-30T16:40:54.881016+00:00",
   "ip_address": "10.137.60.157",
   "gpu_count": 1,
   "gpu_cards": [
     {
       "gpu_card": "NVIDIA GeForce RTX 2050",
       "gpu_usage_percent": 0,
-      "memory_available_mb": 3524,
+      "memory_available_mb": 3870,
       "cuda_cores": 2048
     }
   ]

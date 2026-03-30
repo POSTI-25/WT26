@@ -211,10 +211,13 @@ def query_gpus_with_nvidia_smi():
 
 
 def get_gpu_report():
+    sampled_at_utc = datetime.now(timezone.utc).isoformat()
+
     gpus = query_gpus_with_nvml()
     if gpus is not None:
         return {
             "ok": True,
+            "sampled_at_utc": sampled_at_utc,
             "source": "nvml",
             "gpu_count": len(gpus),
             "gpus": gpus,
@@ -224,6 +227,7 @@ def get_gpu_report():
     if gpus is not None:
         return {
             "ok": True,
+            "sampled_at_utc": sampled_at_utc,
             "source": "nvidia-smi",
             "gpu_count": len(gpus),
             "gpus": gpus,
@@ -231,6 +235,7 @@ def get_gpu_report():
 
     return {
         "ok": False,
+        "sampled_at_utc": sampled_at_utc,
         "source": "none",
         "gpu_count": 0,
         "gpus": [],
@@ -247,7 +252,7 @@ def build_ping_reply(report):
         "service": "gpu_receiver",
         "source": report.get("source", "none"),
         "gpu_count": int(report.get("gpu_count", 0)),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": report.get("sampled_at_utc") or datetime.now(timezone.utc).isoformat(),
     }
     if report.get("hostname"):
         reply["hostname"] = report.get("hostname")
@@ -312,7 +317,7 @@ def build_gpu_store(report, ip_address: str):
         )
 
     return {
-        "updated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "updated_at_utc": report.get("sampled_at_utc") or datetime.now(timezone.utc).isoformat(),
         "ip_address": ip_address,
         "gpu_count": len(gpu_cards),
         "gpu_cards": gpu_cards,

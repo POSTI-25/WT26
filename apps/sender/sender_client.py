@@ -278,6 +278,7 @@ def probe_gpu_node(host: str, port: int, timeout: float) -> dict[str, Any] | Non
         "requested_host": host,
         "port": port,
         "ok": bool(gpu_reply.get("ok", False)),
+        "sampled_at_utc": gpu_reply.get("sampled_at_utc") or ping_reply.get("timestamp_utc"),
         "service": ping_reply.get("service", "unknown"),
         "hostname": gpu_reply.get("hostname") or ping_reply.get("hostname"),
         "source": gpu_reply.get("source") or ping_reply.get("source", "unknown"),
