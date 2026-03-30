@@ -43,6 +43,15 @@ def compile_and_run_cpp(file_path: Path) -> None:
     run_command([str(output_exe)], cwd=file_path.parent)
 
 
+def compile_and_run_cuda(file_path: Path) -> None:
+    nvcc = shutil.which("nvcc")
+    if nvcc is None:
+        raise RuntimeError("CUDA compiler not found (nvcc).")
+    output_exe = file_path.with_suffix(".exe")
+    run_command([nvcc, str(file_path), "-O2", "-o", str(output_exe)])
+    run_command([str(output_exe)], cwd=file_path.parent)
+
+
 def compile_and_run_java(file_path: Path) -> None:
     require_tool("javac")
     require_tool("java")
@@ -81,6 +90,9 @@ def run_file(file_path: Path, open_unknown: bool) -> None:
     if ext in (".cpp", ".cc", ".cxx"):
         compile_and_run_cpp(file_path)
         return
+    if ext == ".cu":
+        compile_and_run_cuda(file_path)
+        return
     if ext == ".java":
         compile_and_run_java(file_path)
         return
@@ -110,8 +122,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--incoming-dir",
-        default="incoming",
-        help="Directory containing received files (default: incoming).",
+        default="data/incoming",
+        help="Directory containing received files (default: data/incoming).",
     )
     parser.add_argument(
         "--pattern",

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = SCRIPT_DIR / "cli_config.json"
+DEFAULT_CONFIG_PATH = SCRIPT_DIR.parent / "config" / "cli_config.json"
 
 
 class ConfigError(Exception):
@@ -46,7 +46,7 @@ def load_cli_config(config_path: Path) -> dict[str, Any]:
         scan_timeout_seconds = float(raw.get("scan_timeout_seconds", 0.35))
         scan_max_workers = int(raw.get("scan_max_workers", 64))
         max_scan_hosts = int(raw.get("max_scan_hosts", 512))
-        scan_store_file = str(raw.get("scan_store_file", "network_gpu_store.json"))
+        scan_store_file = str(raw.get("scan_store_file", "../data/gpu/network_gpu_store.json"))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"Config contains invalid value types: {exc}") from exc
 

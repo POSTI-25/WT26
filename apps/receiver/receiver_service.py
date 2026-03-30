@@ -379,8 +379,8 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=50051, help="Bind port (default: 50051)")
     parser.add_argument(
         "--output-dir",
-        default="incoming",
-        help="Directory where files are written (default: incoming)",
+        default="data/incoming",
+        help="Directory where files are written (default: data/incoming).",
     )
     parser.add_argument(
         "--gpu-status-file",
@@ -389,8 +389,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--gpu-store-file",
-        default="gpu_store.json",
-        help="Path to store receiver GPU card + usage summary (default: gpu_store.json).",
+        default="data/gpu/receiver_gpu_store.json",
+        help="Path to store receiver GPU card + usage summary (default: data/gpu/receiver_gpu_store.json).",
     )
     parser.add_argument(
         "--gpu-refresh-seconds",

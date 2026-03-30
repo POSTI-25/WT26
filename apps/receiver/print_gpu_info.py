@@ -1,7 +1,7 @@
 import argparse
 import json
 
-from receiver import get_gpu_report, print_gpu_report
+from receiver_service import get_gpu_report, print_gpu_report
 
 
 def main() -> None:
