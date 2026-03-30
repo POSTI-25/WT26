@@ -1,51 +1,41 @@
-# gRPC Hotspot File Transfer (C++)
+# Simple Hotspot File Transfer (Python, No Extra Packages)
 
-This repository uses gRPC streaming for direct node-to-node transfer over hotspot/LAN:
+This is the easiest alternative to the previous C++/gRPC setup.
 
-- `receiver`: runs a gRPC server and writes incoming file chunks to disk.
-- `sender`: runs a gRPC client and streams metadata + file chunks.
+It uses only Python standard library (`socket`, `json`, `argparse`) so there are no external dependencies to install.
 
 ## Project Structure
 
-- `CMakeLists.txt`
-- `proto/transfer.proto`
-- `src/sender.cpp`
-- `src/receiver.cpp`
+- `python/receiver.py`
+- `python/sender.py`
 
 ## Prerequisites
 
-- C++20 compiler
-- Protobuf (`protoc` + C++ libs)
-- gRPC C++ libs and CMake package files
-- CMake 3.16+
-
-## Build
-
-```powershell
-cmake -S . -B build
-cmake --build build --config Release
-```
+- Python 3.8+ (already available on most systems)
 
 ## Run
 
 On receiver node:
 
 ```powershell
-.\build\Release\receiver.exe 50051 .\incoming
+python .\python\receiver.py --host 0.0.0.0 --port 50051 --output-dir .\incoming
 ```
 
 On sender node:
 
 ```powershell
-.\build\Release\sender.exe <RECEIVER_IP> .\path\to\file.bin 50051 1048576
+python .\python\sender.py <RECEIVER_IP> .\path\to\file.bin --port 50051 --chunk-size 1048576
 ```
 
-Parameters:
-- `port` default: `50051`
-- `chunk_size_bytes` default: `1048576` (1 MB)
+## Protocol
+
+1. Sender sends metadata JSON line (`filename`, `size`, `chunk_size`).
+2. Receiver replies `OK`.
+3. Sender streams file bytes in chunks.
+4. Receiver replies with final JSON status.
 
 ## Notes
 
-- Both nodes must be reachable on the hotspot network.
-- Open firewall for the gRPC port if needed.
-- This is v1 transport only (insecure creds, no auth/retry/checksum yet).
+- Both nodes must be on the same hotspot/LAN and reachable by IP.
+- Open firewall for the chosen port if needed.
+- This is a simple v1 transport (no TLS/auth/retry-resume yet).
